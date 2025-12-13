@@ -25,13 +25,19 @@ function parseRepo(url: string | undefined) {
 }
 
 export const load: PageServerLoad = async ({ fetch, platform }) => {
-	const githubToken = platform?.env?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+	// Cloudflare Worker secret is exposed via platform.env; fall back to process/import.meta for local dev
+	const githubToken =
+		platform?.env?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? (import.meta as any)?.env?.GITHUB_TOKEN;
 	const acceptTopics = 'application/vnd.github+json, application/vnd.github.mercy-preview+json';
 	const headers: Record<string, string> = {
 		accept: acceptTopics,
 		...(githubToken ? { authorization: `Bearer ${githubToken}` } : {})
 	};
 	const publicHeaders = { accept: acceptTopics };
+
+	if (!githubToken) {
+		console.warn('GITHUB_TOKEN not found; GitHub API requests will be rate-limited.');
+	}
 
 	const org = 'contributor-club';
 
@@ -42,6 +48,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	let orgMembersList: { login: string; avatar_url: string; html_url: string }[] = [];
 	let orgRepos: OrgRepo[] = [];
 	let memberRepos: OrgRepo[] = [];
+	let blogPosts: { title: string; excerpt: string; date?: string; url: string }[] = [];
 
 	try {
 		const membersRes = await fetch(`https://api.github.com/orgs/${org}/members?per_page=100`, { headers });
@@ -207,11 +214,87 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		}
 	}
 
+	// Fetch wiki pages as blog posts
+	try {
+		const wikiOwner = org;
+		const wikiRepo = 'contrib.club.wiki';
+		const contentsRes = await fetch(`https://api.github.com/repos/${wikiOwner}/${wikiRepo}/contents`, {
+			headers: githubToken ? headers : publicHeaders
+		});
+
+		if (contentsRes.ok) {
+			const files: { name: string; path: string; download_url?: string; type: string; url: string }[] =
+				await contentsRes.json();
+
+			const markdownFiles = files.filter((file) => file.type === 'file' && file.name.endsWith('.md'));
+
+			const posts = await Promise.all(
+				markdownFiles.map(async (file) => {
+					const rawUrl =
+						file.download_url ??
+						`https://raw.githubusercontent.com/${wikiOwner}/${wikiRepo}/master/${file.path}`;
+					let content = '';
+					try {
+						const contentRes = await fetch(rawUrl, { headers: githubToken ? headers : publicHeaders });
+						if (contentRes.ok) {
+							content = await contentRes.text();
+						}
+					} catch (error) {
+						console.error('Failed to fetch wiki content for', file.path, error);
+					}
+
+					let latestDate: string | undefined;
+					try {
+						const commitRes = await fetch(
+							`https://api.github.com/repos/${wikiOwner}/${wikiRepo}/commits?path=${encodeURIComponent(file.path)}&per_page=1`,
+							{ headers: githubToken ? headers : publicHeaders }
+						);
+						if (commitRes.ok) {
+							const commits: { commit: { committer?: { date?: string }; author?: { date?: string } } }[] =
+								await commitRes.json();
+							latestDate =
+								commits[0]?.commit?.committer?.date ??
+								commits[0]?.commit?.author?.date ??
+								undefined;
+						}
+					} catch (error) {
+						console.error('Failed to load wiki commit date for', file.path, error);
+					}
+
+					const lines = content
+						.split(/\r?\n/)
+						.map((line) => line.trim())
+						.filter(Boolean);
+					const heading = lines.find((line) => line.startsWith('#'))?.replace(/^#+\s*/, '');
+					const bodyLine = lines.find((line) => !line.startsWith('#'));
+					const fileTitle = file.name.replace(/\.md$/, '').replace(/[-_]/g, ' ');
+					const title = heading || fileTitle;
+					const excerpt = bodyLine || heading || 'Read more from the Contrib.Club wiki.';
+					const slug = file.name.replace(/\.md$/, '');
+					const url = `https://github.com/${wikiOwner}/contrib.club/wiki/${encodeURIComponent(slug)}`;
+
+					return { title, excerpt, date: latestDate, url };
+				})
+			);
+
+			blogPosts = posts
+				.filter(Boolean)
+				.sort((a, b) => {
+					const aDate = a.date ? new Date(a.date).getTime() : 0;
+					const bDate = b.date ? new Date(b.date).getTime() : 0;
+					return bDate - aDate;
+				});
+		}
+	} catch (error) {
+		console.error('Failed to load wiki posts', error);
+	}
+
 	return {
 		githubStats: { stars, forks, contributors: orgMembers },
 		repoStats,
 		orgRepos,
 		memberRepos,
-		orgMembers: orgMembersList
+		orgMembers: orgMembersList,
+		blogPosts
 	};
 };

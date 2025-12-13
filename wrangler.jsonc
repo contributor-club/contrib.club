@@ -35,9 +35,7 @@
 	 * Environment Variables
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
 	 */
-	"vars": {
-		"GITHUB_TOKEN": "${GITHUB_TOKEN}"
-	},
+	// Keep secrets in Wrangler/Dashboard secrets, not plain vars, so they aren't logged in plaintext.
 	/**
 	 * Note: Use secrets to store sensitive data.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/

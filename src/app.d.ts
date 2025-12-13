@@ -6,9 +6,12 @@ declare global {
 		// interface Locals {}
 		// interface PageData {}
 		// interface PageState {}
+		// Cloudflare Worker bindings (see https://developers.cloudflare.com/workers/configuration/environment-variables/)
 		interface Platform {
-			// Cloudflare Workers bindings (see https://developers.cloudflare.com/workers/configuration/environment-variables/)
 			env?: {
+				/**
+				 * Injected from wrangler secrets/vars (wrangler.jsonc / dashboard).
+				 */
 				GITHUB_TOKEN?: string;
 			};
 		}

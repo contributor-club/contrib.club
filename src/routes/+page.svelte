@@ -72,15 +72,7 @@
 	let deleting = $state(false);
 	let pauseTicks = $state(0);
 
-	// Placeholder blog entry
-	const blogPosts = [
-		{
-			title: 'Neo-brutal Marketing',
-			date: 'Dec 2025',
-			tags: ['Design', 'Frontend'],
-			excerpt: 'How we built a unique brand and site experience with neo-brutalism principles.'
-		}
-	];
+	type BlogPost = { title: string; date?: string; excerpt: string; url: string; tags?: string[] };
 
 	let applyName = $state('');
 	let applyEmail = $state('');
@@ -107,6 +99,28 @@
 			sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
 		}))
 	);
+
+	const fallbackBlogPosts: BlogPost[] = [
+		{
+			title: 'Neo-brutal Marketing',
+			date: 'Recent',
+			tags: ['Design', 'Frontend'],
+			excerpt: 'How we built a unique brand and site experience with neo-brutalism principles...',
+			url: 'https://github.com/contributor-club/contrib.club/wiki'
+		}
+	];
+
+	const blogPosts = $derived(
+		((data?.blogPosts as BlogPost[] | undefined) ?? []).map((post) => ({
+			title: post.title,
+			date: post.date ?? 'Recent',
+			excerpt: summaryWithEllipsis(post.excerpt),
+			url: post.url,
+			tags: post.tags ?? []
+		}))
+	);
+
+	const renderedBlogPosts = $derived(blogPosts.length ? blogPosts : fallbackBlogPosts);
 
 	// Normalizes GitHub input to a username
 	function sanitizeGithubUser(value: string): string | null {
@@ -476,24 +490,30 @@
 				</div>
 			</div>
 			<div class="grid gap-6 lg:grid-cols-3">
-				{#each blogPosts as post}
+				{#each renderedBlogPosts as post}
 					<article class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]">
 						<div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600">
-							<span>{post.date}</span>
+							<span>{post.date ?? 'Recent'}</span>
 							<div class="flex gap-2">
-								{#each post.tags as tag}
+								{#each post.tags ?? [] as tag}
 									<span class="rounded-full bg-slate-100 px-2 py-1 text-slate-700">{tag}</span>
 								{/each}
 							</div>
 						</div>
 						<h3 class="text-xl font-semibold">{post.title}</h3>
 						<p class="text-slate-700">{post.excerpt}</p>
-						<a
-							class="text-sm font-semibold underline decoration-2 decoration-slate-900 underline-offset-4"
-							href="/blog"
-						>
-							Read more ->
-						</a>
+						{#if post.url}
+							<a
+								class="text-sm font-semibold underline decoration-2 decoration-slate-900 underline-offset-4"
+								href={post.url}
+								target="_blank"
+								rel="noreferrer"
+							>
+								Read more ->
+							</a>
+						{:else}
+							<span class="text-sm font-semibold text-slate-500">Read more coming soon</span>
+						{/if}
 					</article>
 				{/each}
 			</div>
