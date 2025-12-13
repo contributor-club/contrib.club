@@ -39,11 +39,13 @@
 
 	const githubStats = $derived(data?.githubStats ?? { stars: 0, forks: 0, contributors: 0 });
 
-	const repoStats: Record<string, { stars: number; forks: number }> = $derived(data?.repoStats ?? {});
+	const repoStats: Record<string, { stars: number; forks: number; activity?: number[] }> = $derived(
+		data?.repoStats ?? {}
+	);
 	const statsReady = $derived(Boolean(data?.repoStats));
 	const orgMembersCount = $derived((data?.orgMembers ?? []).length);
 	const orgReposCount = $derived((data?.orgRepos ?? []).length);
-	const orgReposEmpty = $derived(orgReposCount === 0);
+	const memberRepos = $derived(data?.memberRepos ?? []);
 
 	// Hero stat blocks derived from live GitHub data
 	const stats = $derived([
@@ -186,28 +188,54 @@
 		}
 	];
 
-	// Projects sourced from org repos; tags from topics or language
+	const hiddenTopics = ['contrib-club', 'contrib.club'];
+
+	function summaryWithEllipsis(text: string | null | undefined) {
+		if (!text) return 'No description...';
+		const trimmed = text.trim();
+		if (trimmed.endsWith('...')) return trimmed;
+		if (trimmed.endsWith('..')) return `${trimmed}.`;
+		if (trimmed.endsWith('.')) return `${trimmed}..`;
+		return `${trimmed}...`;
+	}
+
+	// Projects sourced from org repos; tags from topics or language, ignoring sentinel topic
 	const allProjects = $derived(
-		(orgRepos && orgRepos.length > 0 ? orgRepos : fallbackOrgRepos).map((repo: OrgRepoShape) => ({
-			title: repo.name ?? 'Repo',
-			summary: repo.description ?? 'Repository from contributor-club.',
-			tags:
-				repo.topics && repo.topics.length > 0
-					? repo.topics
-					: [repo.language || 'General'],
-			isNew: repo.updated_at ? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45 : false,
-			ownerType: 'group' as const,
-			owner: 'contributor-club',
-			status: 'Live',
-			github: repo.html_url ?? 'https://github.com/contributor-club',
-			contributors: [],
-			hearts: 0,
-			sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
-		}))
+		[...(orgRepos ?? []), ...(memberRepos ?? []), ...(orgRepos && orgRepos.length ? [] : fallbackOrgRepos)]
+			.filter((repo) => {
+				const topics = repo.topics ?? [];
+				return !topics.includes('no.contrib.club') && !topics.includes('no-contrib-club');
+			})
+			.map((repo: OrgRepoShape) => ({
+				title: repo.name ?? 'Repo',
+				summary: repo.description ?? 'No description',
+				tags: (() => {
+					const topicTags = (repo.topics ?? []).filter((tag) => !hiddenTopics.includes(tag));
+					return topicTags.length > 0 ? topicTags : [repo.language || 'General'];
+				})(),
+				isNew: repo.updated_at
+					? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45
+					: false,
+				ownerType: 'group' as const,
+				owner: 'contributor-club',
+				status: 'Live',
+				github: repo.html_url ?? 'https://github.com/contributor-club',
+				contributors: [],
+				hearts: 0,
+				sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
+			}))
 	);
 
+	const hasProjects = $derived(allProjects.length > 0);
+
 	const tagOptions = $derived(
-		Array.from(new Set(allProjects.flatMap((project) => project.tags)))
+		Array.from(
+			new Set(
+				allProjects
+					.flatMap((project) => project.tags)
+					.filter((tag) => !hiddenTopics.includes(tag))
+			)
+		)
 	);
 
 	const tagPalette = [
@@ -228,6 +256,31 @@
 			hash = (hash + char.charCodeAt(0)) % tagPalette.length;
 		}
 		return tagPalette[hash];
+	}
+
+	const DAYS_IN_WINDOW = 60; // last 2 months (approx)
+
+	// Generates a contribution heatmap; prefers real activity, falls back to a deterministic pattern
+	function contributionBlocks(seed: string, activity?: number[]) {
+		if (activity && activity.length > 0) {
+			const lastWindow = activity.slice(-DAYS_IN_WINDOW);
+			const maxValue = Math.max(...lastWindow, 0);
+			return lastWindow.map((count) => {
+				if (!maxValue) return count > 0 ? 1 : 0;
+				const ratio = count / maxValue;
+				if (count === 0) return 0;
+				if (ratio > 0.66) return 3;
+				if (ratio > 0.33) return 2;
+				return 1;
+			});
+		}
+
+		// Fallback deterministic pattern when activity isn't available yet
+		let hash = 0;
+		for (const char of seed) {
+			hash = (hash * 31 + char.charCodeAt(0)) % 101;
+		}
+		return Array.from({ length: DAYS_IN_WINDOW }, (_, idx) => ((hash + idx * 17) % 100) % 4);
 	}
 
 	onMount(() => {
@@ -308,6 +361,23 @@
 			`Contrib.Club data → members: ${orgMembersCount}, repos: ${orgReposCount}, projects rendered: ${allProjects.length}`
 		);
 	});
+
+	// Log repositories and topics when loaded (client-side)
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const repos = [...(orgRepos ?? []), ...(memberRepos ?? [])];
+		if (repos.length > 0) {
+			console.log(
+				'Contrib.Club repos with topics:',
+				repos.map((repo) => ({
+					name: repo.name,
+					url: repo.html_url,
+					topics: repo.topics ?? [],
+					description: repo.description ?? 'No description'
+				}))
+			);
+		}
+	});
 </script>
 
 <svelte:head>
@@ -360,6 +430,16 @@
 					50% {
 						opacity: 0;
 					}
+				}
+			</style>
+			<style>
+				.project-summary {
+					min-height: 3rem;
+					line-height: 1.5rem;
+					display: -webkit-box;
+					-webkit-line-clamp: 2;
+					-webkit-box-orient: vertical;
+					overflow: hidden;
 				}
 			</style>
 
@@ -464,7 +544,7 @@
 			</div>
 
 			<div class="grid gap-5 lg:grid-cols-2">
-				{#if orgReposEmpty}
+				{#if !hasProjects}
 					{#each Array(4) as _}
 						<div class="h-44 rounded-lg border-2 border-slate-900 bg-slate-100 shadow-[6px_6px_0_#0f172a] animate-pulse"></div>
 					{/each}
@@ -478,14 +558,30 @@
 							<div class="flex items-center justify-between">
 								<div class="space-y-1">
 									<h3 class="text-2xl font-semibold">{project.title}</h3>
-									<p class="text-sm text-slate-700">{project.summary}</p>
+									<p class="project-summary text-sm text-slate-700">{summaryWithEllipsis(project.summary)}</p>
 								</div>
 							</div>
 							<div class="rounded-md border-2 border-slate-900 bg-slate-50 p-3 shadow-[4px_4px_0_#0f172a]">
-								<svg class="h-14 w-full text-slate-900" viewBox="0 0 150 40" role="presentation" aria-hidden="true">
-									<path d={project.sparklinePath} stroke="currentColor" stroke-width="3" fill="none" />
-									<rect x="0" y="30" width="150" height="6" fill="#e2e8f0" />
-								</svg>
+								<p class="text-[11px] font-semibold uppercase text-slate-600">Contributions</p>
+								<div class="mt-2 flex justify-center">
+									<div class="grid min-h-[56px] grid-flow-col auto-cols-[16px] grid-rows-3 gap-1 pr-2">
+										{#each contributionBlocks(project.title, repoStats[project.github]?.activity) as intensity}
+											<div
+												aria-label="Contribution block"
+												class={`h-4 w-4 rounded-sm border border-slate-200 ${
+													intensity === 0
+														? 'bg-slate-200'
+														: intensity === 1
+															? 'bg-emerald-200'
+															: intensity === 2
+																? 'bg-emerald-400'
+																: 'bg-emerald-600'
+												}`}
+												data-test="contrib-block"
+											></div>
+										{/each}
+									</div>
+								</div>
 							</div>
 							<div class="grid gap-3 text-sm text-slate-700 md:grid-cols-2">
 								<div class="flex h-full items-center justify-between rounded-md border-2 border-slate-900 bg-white px-3 py-2 shadow-[3px_3px_0_#0f172a]" data-test="project-stars">
