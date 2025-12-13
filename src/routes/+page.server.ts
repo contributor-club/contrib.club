@@ -38,7 +38,27 @@ function parseRepo(url: string | undefined) {
 
 type Env = {
 	GITHUB_TOKEN?: string;
+	CACHE_DB?: any;
 };
+
+type CachedPayload = {
+	githubStats: { stars: number; forks: number; contributors: number };
+	repoStats: Record<string, { stars: number; forks: number; activity?: number[] }>;
+	orgRepos: OrgRepo[];
+	memberRepos: OrgRepo[];
+	orgMembers: { login: string; avatar_url: string; html_url: string }[];
+	memberDetails: MemberDetail[];
+	blogPosts: { title: string; excerpt: string; date?: string; url: string; content?: string }[];
+};
+
+const memoryCache: { timestamp: number; payload: CachedPayload | null } = {
+	timestamp: 0,
+	payload: null
+};
+const CACHE_TTL = 1000 * 60 * 15; // 15 minutes cache freshness
+const RATE_LIMIT_COOLDOWN = 1000 * 60 * 15; // 15 minutes before retrying after a 403/429
+let rateLimitUntil = 0;
+const D1_CACHE_KEY = 'github-cache';
 
 export const load: PageServerLoad = async ({ fetch, platform }) => {
 	// Cloudflare Worker secret is exposed via platform.env; fall back to process/import.meta for local dev
@@ -79,7 +99,84 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	let orgRepos: OrgRepo[] = [];
 	let memberRepos: OrgRepo[] = [];
 	let blogPosts: { title: string; excerpt: string; date?: string; url: string; content?: string }[] = [];
+	let fallbackRepoCache: string[] = [];
+	let rateLimited = false;
+	const d1 = cfEnv?.CACHE_DB;
+	let persistedPayload: CachedPayload | null = null;
+	let persistedTimestamp = 0;
+	let persistedRateUntil = 0;
 
+	// Load fallback URLs from bundled file (cached in-memory for the request)
+	try {
+		const fallbackModule = await import('$lib/fallback.txt?raw');
+		fallbackRepoCache = fallbackModule.default
+			.split(/\r?\n/)
+			.map((line: string) => line.trim())
+			.filter(Boolean);
+	} catch (error) {
+		console.error('Failed to load fallback repo list', error);
+	}
+
+	const now = Date.now();
+
+	// Try loading persisted cache from D1 (shared across instances)
+	if (d1) {
+		try {
+			await d1
+				.prepare(
+					'CREATE TABLE IF NOT EXISTS github_cache (id TEXT PRIMARY KEY, payload TEXT, timestamp INTEGER, rate_limit_until INTEGER)'
+				)
+				.run();
+			const row = (await d1
+				.prepare('SELECT payload, timestamp, rate_limit_until FROM github_cache WHERE id = ?')
+				.bind(D1_CACHE_KEY)
+				.first()) as { payload?: string; timestamp?: number; rate_limit_until?: number } | null;
+			if (row?.payload) {
+				persistedPayload = JSON.parse(row.payload) as CachedPayload;
+				persistedTimestamp = row.timestamp ?? 0;
+				persistedRateUntil = row.rate_limit_until ?? 0;
+			}
+		} catch (error) {
+			console.error('Failed to read D1 cache', error);
+		}
+	}
+
+	// If we recently hit rate limits, avoid making fresh GitHub calls and serve cache/fallback
+	if (now < rateLimitUntil || now < persistedRateUntil) {
+		if (memoryCache.payload && now - memoryCache.timestamp < CACHE_TTL) {
+			console.warn('Rate limit cooldown active; serving cached payload.');
+			return memoryCache.payload;
+		}
+		if (persistedPayload && now - persistedTimestamp < CACHE_TTL) {
+			console.warn('Rate limit cooldown active; serving persisted cache.');
+			return persistedPayload;
+		}
+		if (fallbackRepoCache.length > 0) {
+			console.warn('Rate limit cooldown active; serving fallback repo list.');
+			const fallbackPayload: CachedPayload = {
+				githubStats: { stars: 0, forks: 0, contributors: 0 },
+				repoStats: {},
+				orgRepos: fallbackRepoCache.map((repoUrl) => ({
+					name: parseRepo(repoUrl)?.repo ?? repoUrl,
+					description: 'Fallback repository (cached list)',
+					html_url: repoUrl,
+					stargazers_count: 0,
+					forks_count: 0,
+					topics: ['fallback'],
+					language: 'General',
+					updated_at: new Date().toISOString(),
+					created_at: new Date().toISOString()
+				})),
+				memberRepos: [],
+				orgMembers: [],
+				memberDetails: [],
+				blogPosts: []
+			};
+			return fallbackPayload;
+		}
+	}
+
+	// Load fallback URLs from bundled file (cached in-memory for the request)
 	try {
 		const membersRes = await fetch(`https://api.github.com/orgs/${org}/members?per_page=100`, { headers });
 		if (membersRes.ok) {
@@ -88,6 +185,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 			orgMembersList = members;
 		} else {
 			console.error('Org members fetch failed', membersRes.status, await membersRes.text());
+			if (membersRes.status === 403 || membersRes.status === 429) rateLimited = true;
 		}
 	} catch (error) {
 		console.error('Failed to load org members', error);
@@ -156,6 +254,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 				orgMembersList = publicMembers;
 			} else {
 				console.error('Public org members fetch failed', publicMembersRes.status, await publicMembersRes.text());
+				if (publicMembersRes.status === 403 || publicMembersRes.status === 429) rateLimited = true;
 			}
 		} catch (error) {
 			console.error('Failed to load public org members', error);
@@ -168,12 +267,14 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 			`https://api.github.com/users/${org}/repos?per_page=100&type=public&sort=updated`
 		];
 
+		let loaded = false;
 		for (const url of repoUrls) {
 			const headerSet = githubToken ? headers : publicHeaders;
 			try {
 				const reposRes = await fetch(url, { headers: headerSet });
 				if (!reposRes.ok) {
 					console.error('Repo fetch failed', url, reposRes.status, await reposRes.text());
+					if (reposRes.status === 403 || reposRes.status === 429) rateLimited = true;
 					continue;
 				}
 				const reposData: OrgRepo[] = await reposRes.json();
@@ -201,10 +302,26 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 					stars += repoStars;
 					forks += repoForks;
 				}
+				loaded = true;
 				break;
 			} catch (error) {
 				console.error('Failed to load repos from', url, error);
 			}
+		}
+
+		// Fallback to local list when API fails
+		if (!loaded && fallbackRepoCache.length > 0) {
+			orgRepos = fallbackRepoCache.map((repoUrl) => ({
+				name: parseRepo(repoUrl)?.repo ?? repoUrl,
+				description: 'Fallback repository (cached list)',
+				html_url: repoUrl,
+				stargazers_count: 0,
+				forks_count: 0,
+				topics: ['fallback'],
+				language: 'General',
+				updated_at: new Date().toISOString(),
+				created_at: new Date().toISOString()
+			}));
 		}
 	} catch (error) {
 		console.error('Failed to load org repositories', error);
@@ -280,6 +397,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 
 			if (!activityRes.ok) {
 				console.error('Activity fetch failed', repoUrl, activityRes.status, await activityRes.text());
+				if (activityRes.status === 403 || activityRes.status === 429) rateLimited = true;
 				continue;
 			}
 
@@ -368,12 +486,14 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 					const bDate = b.date ? new Date(b.date).getTime() : 0;
 					return bDate - aDate;
 				});
+		} else if (contentsRes.status === 403 || contentsRes.status === 429) {
+			rateLimited = true;
 		}
 	} catch (error) {
 		console.error('Failed to load wiki posts', error);
 	}
 
-	return {
+	const payload: CachedPayload = {
 		githubStats: { stars, forks, contributors: orgMembers },
 		repoStats,
 		orgRepos,
@@ -382,4 +502,43 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		memberDetails,
 		blogPosts
 	};
+
+	// Serve cached data if rate limited and cache is still fresh
+	const nowFinal = Date.now();
+	if (rateLimited && memoryCache.payload && nowFinal - memoryCache.timestamp < CACHE_TTL) {
+		console.warn('Serving cached GitHub data due to rate limiting.');
+		return memoryCache.payload;
+	}
+	if (rateLimited && persistedPayload && nowFinal - persistedTimestamp < CACHE_TTL) {
+		console.warn('Serving persisted GitHub data due to rate limiting.');
+		return persistedPayload;
+	}
+
+	if (rateLimited) {
+		rateLimitUntil = nowFinal + RATE_LIMIT_COOLDOWN;
+	}
+
+	// Store fresh cache
+	memoryCache.payload = payload;
+	memoryCache.timestamp = now;
+
+	if (d1) {
+		try {
+			await d1
+				.prepare(
+					'CREATE TABLE IF NOT EXISTS github_cache (id TEXT PRIMARY KEY, payload TEXT, timestamp INTEGER, rate_limit_until INTEGER)'
+				)
+				.run();
+			await d1
+				.prepare(
+					'INSERT OR REPLACE INTO github_cache (id, payload, timestamp, rate_limit_until) VALUES (?, ?, ?, ?)'
+				)
+				.bind(D1_CACHE_KEY, JSON.stringify(payload), nowFinal, rateLimitUntil || persistedRateUntil)
+				.run();
+		} catch (error) {
+			console.error('Failed to persist cache to D1', error);
+		}
+	}
+
+	return payload;
 };
