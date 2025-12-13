@@ -232,34 +232,42 @@
 		return `${trimmed}...`;
 	}
 
+	function buildProjects(orgRepos: OrgRepoShape[] = [], memberRepos: OrgRepoShape[] = []) {
+		const dedupedRepos = Array.from(
+			new Map(
+				[...(orgRepos ?? []), ...(memberRepos ?? [])]
+					.filter((repo) => {
+						const topics = repo.topics ?? [];
+						return repo.html_url && !topics.includes('no.contrib.club') && !topics.includes('no-contrib-club');
+					})
+					.map((repo) => [repo.html_url as string, repo])
+			).values()
+		);
+
+		return dedupedRepos.map((repo: OrgRepoShape) => ({
+			title: repo.name ?? 'Repo',
+			summary: repo.description ?? 'No description',
+			tags: (() => {
+				const topicTags = (repo.topics ?? []).filter((tag) => !hiddenTopics.includes(tag));
+				return topicTags.length > 0 ? topicTags : [repo.language || 'General'];
+			})(),
+			created_at: repo.created_at,
+			updated_at: repo.updated_at,
+			isNew: repo.updated_at
+				? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45
+				: false,
+			ownerType: 'group' as const,
+			owner: 'contributor-club',
+			status: 'Live',
+			github: repo.html_url ?? 'https://github.com/contributor-club',
+			contributors: [],
+			hearts: 0,
+			sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
+		}));
+	}
+
 	// Projects sourced from org repos; tags from topics or language, ignoring sentinel topic
-	const allProjects = $derived(
-		[...(orgRepos ?? []), ...(memberRepos ?? [])]
-			.filter((repo) => {
-				const topics = repo.topics ?? [];
-				return !topics.includes('no.contrib.club') && !topics.includes('no-contrib-club');
-			})
-			.map((repo: OrgRepoShape) => ({
-				title: repo.name ?? 'Repo',
-				summary: repo.description ?? 'No description',
-				tags: (() => {
-					const topicTags = (repo.topics ?? []).filter((tag) => !hiddenTopics.includes(tag));
-					return topicTags.length > 0 ? topicTags : [repo.language || 'General'];
-				})(),
-				created_at: repo.created_at,
-				updated_at: repo.updated_at,
-				isNew: repo.updated_at
-					? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45
-					: false,
-				ownerType: 'group' as const,
-				owner: 'contributor-club',
-				status: 'Live',
-				github: repo.html_url ?? 'https://github.com/contributor-club',
-				contributors: [],
-				hearts: 0,
-				sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
-			}))
-	);
+	const allProjects = $derived(buildProjects(orgRepos, memberRepos));
 
 	const hasProjects = $derived(allProjects.length > 0);
 
@@ -450,6 +458,21 @@
 </svelte:head>
 
 <div class="min-h-screen bg-[#f7f7f2] text-slate-900">
+	<a
+		class="fixed right-4 top-4 z-50 inline-flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white px-4 py-2 text-sm font-semibold shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px] hover:shadow-[8px_8px_0_#0f172a]"
+		href="https://github.com/contributor-club/contrib.club"
+		target="_blank"
+		rel="noreferrer"
+		aria-label="Fork this project on GitHub"
+	>
+		View Source
+		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" class="h-4 w-4 fill-current" role="img" aria-hidden="true">
+			<path
+				fill-rule="evenodd"
+				d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.54 5.47 7.6.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.19 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+			/>
+		</svg>
+	</a>
 	<main class="mx-auto max-w-6xl px-5 pb-20 mt-10">
 		<section class="flex min-h-[70vh] flex-col items-center gap-10 border-b-2 border-slate-900 py-16 text-center">
 
@@ -902,7 +925,7 @@
 			<div class="flex flex-wrap items-center gap-3 text-sm font-semibold text-slate-800">
 				<a
 					class="flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
-					href="https://github.com"
+					href="https://github.com/contributor-club/"
 					target="_blank"
 					rel="noreferrer"
 					aria-label="GitHub"

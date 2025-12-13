@@ -1,3 +1,3 @@
-https://github.com/contributor-club/contrib.club
-https://github.com/contributor-club/.github
-https://github.com/NotReeceHarris/be-clippy.com
+contributor-club/contrib.club
+contributor-club/.github
+NotReeceHarris/be-clippy.com

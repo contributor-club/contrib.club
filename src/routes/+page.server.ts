@@ -36,6 +36,27 @@ function parseRepo(url: string | undefined) {
 	}
 }
 
+function normalizeRepoUrl(value: string | undefined) {
+	if (!value) return null;
+	const trimmed = value.trim().replace(/^\/+|\/+$/g, '');
+	if (!trimmed) return null;
+
+	if (/^https?:\/\//i.test(trimmed)) {
+		try {
+			const url = new URL(trimmed);
+			if (!url.hostname.endsWith('github.com')) return null;
+			url.hash = '';
+			url.search = '';
+			return url.toString();
+		} catch {
+			return null;
+		}
+	}
+
+	if (!trimmed.includes('/')) return null;
+	return `https://github.com/${trimmed}`;
+}
+
 type Env = {
 	GITHUB_TOKEN?: string;
 	CACHE_DB?: any;
@@ -100,6 +121,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	let memberRepos: OrgRepo[] = [];
 	let blogPosts: { title: string; excerpt: string; date?: string; url: string; content?: string }[] = [];
 	let fallbackRepoCache: string[] = [];
+	let fallbackRepoUrls: string[] = [];
 	let rateLimited = false;
 	const d1 = cfEnv?.CACHE_DB;
 	let persistedPayload: CachedPayload | null = null;
@@ -113,6 +135,13 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 			.split(/\r?\n/)
 			.map((line: string) => line.trim())
 			.filter(Boolean);
+		fallbackRepoUrls = Array.from(
+			new Set(
+				fallbackRepoCache
+					.map((value) => normalizeRepoUrl(value))
+					.filter((url): url is string => Boolean(url))
+			)
+		);
 	} catch (error) {
 		console.error('Failed to load fallback repo list', error);
 	}
@@ -151,12 +180,12 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 			console.warn('Rate limit cooldown active; serving persisted cache.');
 			return persistedPayload;
 		}
-		if (fallbackRepoCache.length > 0) {
+		if (fallbackRepoUrls.length > 0) {
 			console.warn('Rate limit cooldown active; serving fallback repo list.');
 			const fallbackPayload: CachedPayload = {
 				githubStats: { stars: 0, forks: 0, contributors: 0 },
 				repoStats: {},
-				orgRepos: fallbackRepoCache.map((repoUrl) => ({
+				orgRepos: fallbackRepoUrls.map((repoUrl) => ({
 					name: parseRepo(repoUrl)?.repo ?? repoUrl,
 					description: 'Fallback repository (cached list)',
 					html_url: repoUrl,
@@ -310,8 +339,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		}
 
 		// Fallback to local list when API fails
-		if (!loaded && fallbackRepoCache.length > 0) {
-			orgRepos = fallbackRepoCache.map((repoUrl) => ({
+		if (!loaded && fallbackRepoUrls.length > 0) {
+			orgRepos = fallbackRepoUrls.map((repoUrl) => ({
 				name: parseRepo(repoUrl)?.repo ?? repoUrl,
 				description: 'Fallback repository (cached list)',
 				html_url: repoUrl,
@@ -327,6 +356,81 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		console.error('Failed to load org repositories', error);
 	}
 
+	// Load curated fallback repositories and merge them into the org repo list
+	let fallbackRepos: OrgRepo[] = [];
+	if (fallbackRepoUrls.length > 0) {
+		const headerSet = githubToken ? headers : publicHeaders;
+		try {
+			const fetchedFallbacks = await Promise.all(
+				fallbackRepoUrls.map(async (repoUrl) => {
+					const parsed = parseRepo(repoUrl);
+					if (!parsed) return null;
+
+					try {
+						const repoRes = await fetch(
+							`https://api.github.com/repos/${parsed.owner}/${parsed.repo}`,
+							{ headers: headerSet }
+						);
+
+						if (repoRes.ok) {
+							const repoData: OrgRepo = await repoRes.json();
+							return {
+								name: repoData.name ?? parsed.repo,
+								description: repoData.description ?? 'Fallback repository (cached list)',
+								html_url: repoData.html_url ?? repoUrl,
+								stargazers_count: repoData.stargazers_count ?? 0,
+								forks_count: repoData.forks_count ?? 0,
+								topics: repoData.topics ?? [],
+								language: repoData.language,
+								updated_at: repoData.updated_at,
+								created_at: (repoData as any).created_at
+							};
+						}
+
+						if (repoRes.status === 403 || repoRes.status === 429) rateLimited = true;
+					} catch (error) {
+						console.error('Failed to load fallback repo', repoUrl, error);
+					}
+
+					return {
+						name: parsed.repo,
+						description: 'Fallback repository (cached list)',
+						html_url: repoUrl,
+						stargazers_count: 0,
+						forks_count: 0,
+						topics: ['fallback'],
+						language: 'General',
+						updated_at: new Date().toISOString(),
+						created_at: new Date().toISOString()
+					};
+				})
+			);
+
+			fallbackRepos = fetchedFallbacks.filter((repo): repo is OrgRepo => Boolean(repo));
+		} catch (error) {
+			console.error('Failed to process fallback repos', error);
+		}
+
+		const orgRepoUrls = new Set(
+			orgRepos.map((repo) => repo.html_url).filter((url): url is string => Boolean(url))
+		);
+		for (const repo of fallbackRepos) {
+			const url = repo.html_url;
+			if (!url || orgRepoUrls.has(url)) continue;
+			orgRepos.push(repo);
+			orgRepoUrls.add(url);
+		}
+
+		// Deduplicate org repos in case of overlap
+		orgRepos = Array.from(
+			new Map(
+				orgRepos
+					.filter((repo) => repo.html_url)
+					.map((repo) => [repo.html_url as string, repo])
+			).values()
+		);
+	}
+
 	// Fetch member repositories with contrib.club topic
 	if (orgMembersList.length > 0) {
 		try {
@@ -340,20 +444,28 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 						const res = await fetch(url, { headers });
 						if (!res.ok) continue;
 						const json = await res.json();
-				const repos: OrgRepo[] = json.items ?? [];
-				results.push(...repos);
-			} catch (error) {
-				console.error('Failed to load member repos for', member.login, error);
-			}
-		}
+						const repos: OrgRepo[] = json.items ?? [];
+						results.push(...repos);
+					} catch (error) {
+						console.error('Failed to load member repos for', member.login, error);
+					}
+				}
 
-		const deduped = Array.from(new Map(results.map((repo) => [repo.html_url, repo])).values());
-		return deduped;
-	});
+				const deduped = Array.from(new Map(results.map((repo) => [repo.html_url, repo])).values());
+				return deduped;
+			});
 
 			const memberRepoResults = await Promise.all(memberRepoRequests);
+			const orgRepoUrls = new Set(
+				orgRepos.map((repo) => repo.html_url).filter((url): url is string => Boolean(url))
+			);
 			memberRepos = Array.from(
-				new Map(memberRepoResults.flat().map((repo) => [repo.html_url, repo])).values()
+				new Map(
+					memberRepoResults
+						.flat()
+						.filter((repo) => repo.html_url && !orgRepoUrls.has(repo.html_url))
+						.map((repo) => [repo.html_url as string, repo])
+				).values()
 			);
 
 			for (const repo of memberRepos) {
@@ -371,14 +483,33 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		}
 	}
 
-	// Fetch commit activity (last year) for all repos we know about
-	const allRepoUrls = Array.from(
-		new Set(
+	// Deduplicate across all repos and rebuild stats so we can cache curated fallbacks too
+	const combinedRepos = Array.from(
+		new Map(
 			[...orgRepos, ...memberRepos]
-				.map((repo) => repo.html_url)
-				.filter((url): url is string => Boolean(url))
-		)
+				.filter((repo) => repo.html_url)
+				.map((repo) => [repo.html_url as string, repo])
+		).values()
 	);
+	for (const key of Object.keys(repoStats)) delete repoStats[key];
+	stars = 0;
+	forks = 0;
+
+	for (const repo of combinedRepos) {
+		const repoUrl = repo.html_url as string;
+		const repoStars = repo.stargazers_count ?? 0;
+		const repoForks = repo.forks_count ?? 0;
+		repoStats[repoUrl] = {
+			...repoStats[repoUrl],
+			stars: repoStars,
+			forks: repoForks
+		};
+		stars += repoStars;
+		forks += repoForks;
+	}
+
+	// Fetch commit activity (last year) for all repos we know about
+	const allRepoUrls = combinedRepos.map((repo) => repo.html_url as string);
 
 	for (const repoUrl of allRepoUrls) {
 		const parsed = parseRepo(repoUrl);
