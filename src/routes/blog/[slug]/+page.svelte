@@ -52,7 +52,8 @@
 			.replace(/\r\n/g, '\n')
 			.replace(/\\dn/g, '\n\n')
 			.replace(/\\n/g, '\n');
-		return DOMPurify.sanitize(marked.parse(normalized) as string, { USE_PROFILES: { html: true } });
+		const purify = (DOMPurify as any).sanitize ?? (DOMPurify as any);
+		return purify(marked.parse(normalized) as string, { USE_PROFILES: { html: true } });
 	});
 
 	function formatDate(value: string) {
