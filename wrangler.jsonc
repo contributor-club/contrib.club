@@ -17,6 +17,12 @@
 	"observability": {
 		"enabled": true
 	},
+	"routes": [
+		{
+			"pattern": "contrib.club",
+			"custom_domain": true
+		}
+	],
 	
 	/**
 	 * Smart Placement

@@ -34,11 +34,17 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	const githubToken =
 		cfEnv?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? (import.meta as any)?.env?.GITHUB_TOKEN;
 	const acceptTopics = 'application/vnd.github+json, application/vnd.github.mercy-preview+json';
-	const headers: Record<string, string> = {
+	const authHeader: Record<string, string> = githubToken ? { authorization: `token ${githubToken}` } : {};
+	const baseHeaders: Record<string, string> = {
 		accept: acceptTopics,
-		...(githubToken ? { authorization: `Bearer ${githubToken}` } : {})
+		'X-GitHub-Api-Version': '2022-11-28',
+		'user-agent': 'contrib-club-worker/1.0 (+https://contrib.club)'
 	};
-	const publicHeaders = { accept: acceptTopics };
+	const headers: Record<string, string> = {
+		...baseHeaders,
+		...authHeader
+	};
+	const publicHeaders = baseHeaders;
 
 	if (!githubToken) {
 		console.warn('GITHUB_TOKEN not found; GitHub API requests will be rate-limited.');
@@ -67,6 +73,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 			const members: { login: string; avatar_url: string; html_url: string }[] = await membersRes.json();
 			orgMembers = members.length;
 			orgMembersList = members;
+		} else {
+			console.error('Org members fetch failed', membersRes.status, await membersRes.text());
 		}
 	} catch (error) {
 		console.error('Failed to load org members', error);
@@ -77,13 +85,15 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		try {
 			const publicMembersRes = await fetch(
 				`https://api.github.com/orgs/${org}/public_members?per_page=100`,
-				{ headers: { accept: 'application/vnd.github+json' } }
+				{ headers: { ...publicHeaders, accept: 'application/vnd.github+json' } }
 			);
 			if (publicMembersRes.ok) {
 				const publicMembers: { login: string; avatar_url: string; html_url: string }[] =
 					await publicMembersRes.json();
 				orgMembers = publicMembers.length;
 				orgMembersList = publicMembers;
+			} else {
+				console.error('Public org members fetch failed', publicMembersRes.status, await publicMembersRes.text());
 			}
 		} catch (error) {
 			console.error('Failed to load public org members', error);
