@@ -4,6 +4,21 @@ type Env = {
 	CACHE_DB?: any;
 };
 
+function normalizeGithub(value: string): { username: string; url: string } | null {
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+
+	const cleaned = trimmed.replace(/^https?:\/\/(www\.)?github\.com\//i, '').replace(/^@/, '');
+	const username = cleaned.split(/[/?#]/)[0]?.trim();
+	if (!username) return null;
+
+	const normalizedUsername = username.toLowerCase();
+	return {
+		username: normalizedUsername,
+		url: `https://github.com/${normalizedUsername}`
+	};
+}
+
 export const POST: RequestHandler = async ({ request, platform }) => {
 	const cfEnv = platform?.env as Env | undefined;
 	const db = cfEnv?.CACHE_DB;
@@ -37,11 +52,41 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 	}
 
 	try {
+		const normalizedGithub = normalizeGithub(github);
+		if (!normalizedGithub) {
+			return new Response(JSON.stringify({ error: 'A valid GitHub username or URL is required.' }), {
+				status: 400,
+				headers: { 'content-type': 'application/json' }
+			});
+		}
+
+		const normalizedEmail = email.toLowerCase();
+		const normalizedGithubUrl = normalizedGithub.url.toLowerCase();
+
 		await db
 			.prepare(
 				'CREATE TABLE IF NOT EXISTS contact_requests (id TEXT PRIMARY KEY, name TEXT, email TEXT, github_url TEXT, created_at INTEGER)'
 			)
 			.run();
+
+		const duplicate = await db
+			.prepare(
+				'SELECT id FROM contact_requests WHERE lower(email) = ? OR lower(github_url) = ? OR lower(github_url) = ? LIMIT 1'
+			)
+			.bind(normalizedEmail, normalizedGithubUrl, `${normalizedGithubUrl}/`)
+			.first();
+
+		if (duplicate) {
+			return new Response(
+				JSON.stringify({
+					error: 'We already received your request. Hang tight—we will be in touch soon.'
+				}),
+				{
+					status: 409,
+					headers: { 'content-type': 'application/json' }
+				}
+			);
+		}
 
 		const id = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
 		const createdAt = Date.now();
@@ -50,7 +95,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			.prepare(
 				'INSERT INTO contact_requests (id, name, email, github_url, created_at) VALUES (?, ?, ?, ?, ?)'
 			)
-			.bind(id, name, email, github, createdAt)
+			.bind(id, name, email, normalizedGithub.url, createdAt)
 			.run();
 
 		return new Response(JSON.stringify({ ok: true }), {
