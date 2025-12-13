@@ -24,10 +24,14 @@ function parseRepo(url: string | undefined) {
 	}
 }
 
+type Env = {
+	GITHUB_TOKEN?: string;
+};
+
 export const load: PageServerLoad = async ({ fetch, platform }) => {
 	// Cloudflare Worker secret is exposed via platform.env; fall back to process/import.meta for local dev
-	const githubToken =
-		platform?.env?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? (import.meta as any)?.env?.GITHUB_TOKEN;
+	const cfEnv = (platform?.env as Env | undefined) ?? undefined;
+	const githubToken = cfEnv?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? (import.meta as any)?.env?.GITHUB_TOKEN;
 	const acceptTopics = 'application/vnd.github+json, application/vnd.github.mercy-preview+json';
 	const headers: Record<string, string> = {
 		accept: acceptTopics,
@@ -38,8 +42,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	if (!githubToken) {
 		console.warn('GITHUB_TOKEN not found; GitHub API requests will be rate-limited.');
 	} else {
-		const keys = platform?.env ? Object.keys(platform.env) : [];
-		console.log('GITHUB_TOKEN detected in platform/env (length):', githubToken.length, 'env keys:', keys);
+		const keys = cfEnv ? Object.keys(cfEnv) : [];
+		console.log('GITHUB_TOKEN detected (length):', githubToken.length, 'platform.env keys:', keys);
 	}
 
 	const org = 'contributor-club';
