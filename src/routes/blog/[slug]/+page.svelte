@@ -37,6 +37,30 @@
 		} as any
 	);
 
+	function sanitizeHtml(html: string) {
+		const domPurifyAny = DOMPurify as any;
+		// If we already have a sanitize function (browser build), use it.
+		if (domPurifyAny?.sanitize && typeof domPurifyAny.sanitize === 'function') {
+			return domPurifyAny.sanitize(html, { USE_PROFILES: { html: true } });
+		}
+		// If the import is a factory (isomorphic-dompurify default), try to create a purifier when window is present.
+		if (typeof domPurifyAny === 'function') {
+			try {
+				const maybeWindow = (globalThis as any)?.window ?? (typeof window !== 'undefined' ? window : undefined);
+				if (maybeWindow) {
+					const purifier = domPurifyAny(maybeWindow);
+					if (purifier?.sanitize) {
+						return purifier.sanitize(html, { USE_PROFILES: { html: true } });
+					}
+				}
+			} catch {
+				// ignore and fall through
+			}
+		}
+		// Fallback: return raw HTML when sanitization isn't available in this environment.
+		return html;
+	}
+
 	let { data } = $props();
 	const blog = $derived(data.blog as BlogEntry);
 	const emojiOptions = ['👍', '🔥', '🚀', '💡', '❤️'];
@@ -52,8 +76,7 @@
 			.replace(/\r\n/g, '\n')
 			.replace(/\\dn/g, '\n\n')
 			.replace(/\\n/g, '\n');
-		const purify = (DOMPurify as any).sanitize ?? (DOMPurify as any);
-		return purify(marked.parse(normalized) as string, { USE_PROFILES: { html: true } });
+		return sanitizeHtml(marked.parse(normalized) as string);
 	});
 
 	function formatDate(value: string) {
