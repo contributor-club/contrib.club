@@ -13,7 +13,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
-	type OwnerFilter = 'all' | 'group' | 'personal';
+	type OwnerFilter = 'all' | 'group' | 'personal'; 
 	type Project = {
 		title: string;
 		summary: string;
@@ -23,26 +23,35 @@
 		owner: string;
 		status: string;
 		github: string;
+		externalUrl?: string;
+		created_at?: string;
+		updated_at?: string;
 		contributors: { name: string; avatar: string }[];
-		hearts: number;
-		sparklinePath: string;
+		hearts: number; 
+		sparklinePath: string; // Ignore this as we are no longer using the graph, instead contributions graph is being shown.
 	};
+	
 
 	// Server-provided GitHub stats (org + repo-level)
 	let { data } = $props();
 
+
+	// Formats large numbers into human-readable strings (like 1.2k, 3.4m)
 	function formatNumber(value: number) {
 		if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
 		if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
 		return value.toString();
 	}
 
+	// GitHub data derived from server load
 	const githubStats = $derived(data?.githubStats ?? { stars: 0, forks: 0, contributors: 0 });
 
+	// Repository stats for projects displayed on the site
 	const repoStats: Record<string, { stars: number; forks: number; activity?: number[] }> = $derived(
 		data?.repoStats ?? {}
 	);
-	const statsReady = $derived(Boolean(data?.repoStats));
+
+	const statsReady = $derived(Boolean(data?.repoStats)); 
 	const orgMembersCount = $derived((data?.orgMembers ?? []).length);
 	const orgReposCount = $derived((data?.orgRepos ?? []).length);
 	const memberRepos = $derived(data?.memberRepos ?? []);
@@ -70,7 +79,7 @@
 	);
 
 	// Typing animation languages
-	const greetings = ['Hello', 'Bonjour', 'Hola', 'Ciao', 'Hallo', 'Hej'];
+	const greetings = ['Hello', 'Bonjour', 'Hola', 'Ciao', 'Hallo', 'Hej', 'Abracadabra', 'Namaste', 'Salaam', 'Konnichiwa', 'Hii!'];
 	let greetingIndex = $state(0);
 	let typingText = $state('');
 	let charIndex = $state(0);
@@ -78,12 +87,16 @@
 	let pauseTicks = $state(0);
 
 	type BlogPost = {
+		slug: string;
 		title: string;
-		date?: string;
-		excerpt: string;
-		url: string;
+		description: string;
+		content: string;
+		author: string;
+		createdAt: string;
+		modifiedAt?: string;
+		reactions?: Record<string, number>;
 		tags?: string[];
-		content?: string;
+		isNew?: boolean;
 	};
 
 	let applyName = $state('');
@@ -100,46 +113,37 @@
 	let formSuccess = $state<string | null>(null);
 	let formLoading = $state(false);
 	const orgRepos = $derived(data?.orgRepos ?? []);
-	const orgProjects = $derived(
-		orgRepos.map((repo) => ({
-			title: repo.name,
-			summary: repo.description ?? 'Open-source repository in the contributor-club org.',
-			tags: ['Org Repo'],
-			isNew: false,
-			ownerType: 'group' as const,
-			owner: 'contributor-club',
-			status: 'Live',
-			github: repo.html_url,
-			updated_at: repo.updated_at,
-			created_at: repo.created_at,
-			contributors: [],
-			hearts: 0,
-			sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
-		}))
-	);
 
-	const fallbackBlogPosts: BlogPost[] = [
-		{
-			title: 'Neo-brutal Marketing',
-			date: 'Recent',
-			tags: ['Design', 'Frontend'],
-			excerpt: 'How we built a unique brand and site experience with neo-brutalism principles...',
-			url: 'https://github.com/contributor-club/contrib.club/wiki'
-		}
-	];
+	function formatBlogDate(value: string | undefined) {
+		if (!value) return 'Recent';
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return 'Recent';
+		return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+	}
 
 	const blogPosts = $derived(
-		((data?.blogPosts as BlogPost[] | undefined) ?? []).map((post) => ({
-			title: post.title,
-			date: post.date ?? 'Recent',
-			excerpt: summaryWithEllipsis(post.excerpt),
-			content: post.content ?? '',
-			url: post.url,
-			tags: post.tags ?? []
-		}))
+		((data?.blogPosts as BlogPost[] | undefined) ?? []).map((post) => {
+			const createdAt = post.createdAt ?? post.modifiedAt ?? new Date().toISOString();
+			const modifiedAt = post.modifiedAt ?? createdAt;
+			const isNew = Date.now() - new Date(createdAt).getTime() < 1000 * 60 * 60 * 24 * 3;
+			return {
+				slug: post.slug ?? shortId(),
+				title: post.title,
+				description: summaryWithEllipsis(post.description ?? ''),
+				content: post.content ?? '',
+				author: post.author ?? 'contributor-club',
+				createdAt,
+				modifiedAt,
+				reactions: post.reactions ?? {},
+				tags: post.tags ?? [],
+				isNew
+			};
+		})
 	);
 
-	const renderedBlogPosts = $derived(blogPosts.length ? blogPosts : fallbackBlogPosts);
+	const renderedBlogPosts = $derived(
+		[...blogPosts].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+	);
 
 	// Normalizes GitHub input to a username
 	function sanitizeGithubUser(value: string): string | null {
@@ -232,10 +236,30 @@
 		language?: string | null;
 		updated_at?: string;
 		created_at?: string;
+		homepage?: string | null;
 	};
 
 	// Fallback repo if org fetch fails or returns empty
 	const hiddenTopics = ['contrib-club', 'contrib.club'];
+
+	function cleanHomepage(url: string | null | undefined) {
+		if (!url) return undefined;
+		const trimmed = url.trim();
+		if (!trimmed) return undefined;
+		const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed.replace(/^\/+/, '')}`;
+		try {
+			const parsed = new URL(withProtocol);
+			if (parsed.hostname.endsWith('github.com')) return undefined;
+			parsed.hash = '';
+			return parsed.toString();
+		} catch {
+			return undefined;
+		}
+	}
+
+	function shortId() {
+		return Math.random().toString(36).slice(2, 8);
+	}
 
 	function summaryWithEllipsis(text: string | null | undefined) {
 		if (!text) return 'No description...';
@@ -262,26 +286,30 @@
 			).values()
 		);
 
-		return dedupedRepos.map((repo: OrgRepoShape) => ({
-			title: repo.name ?? 'Repo',
-			summary: repo.description ?? 'No description',
-			tags: (() => {
-				const topicTags = (repo.topics ?? []).filter((tag) => !hiddenTopics.includes(tag));
-				return topicTags.length > 0 ? topicTags : [repo.language || 'General'];
-			})(),
-			created_at: repo.created_at,
-			updated_at: repo.updated_at,
-			isNew: repo.updated_at
-				? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45
-				: false,
-			ownerType: 'group' as const,
-			owner: 'contributor-club',
-			status: 'Live',
-			github: repo.html_url ?? 'https://github.com/contributor-club',
-			contributors: [],
-			hearts: 0,
-			sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
-		}));
+		return dedupedRepos.map((repo: OrgRepoShape) => {
+			const externalUrl = cleanHomepage(repo.homepage);
+			return {
+				title: repo.name ?? 'Repo',
+				summary: repo.description ?? 'No description',
+				tags: (() => {
+					const topicTags = (repo.topics ?? []).filter((tag) => !hiddenTopics.includes(tag));
+					return topicTags.length > 0 ? topicTags : [repo.language || 'General'];
+				})(),
+				created_at: repo.created_at,
+				updated_at: repo.updated_at,
+				isNew: repo.updated_at
+					? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45
+					: false,
+				ownerType: 'group' as const,
+				owner: 'contributor-club',
+				status: 'Live',
+				github: repo.html_url ?? 'https://github.com/contributor-club',
+				externalUrl,
+				contributors: [],
+				hearts: 0,
+				sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
+			};
+		});
 	}
 
 	// Projects sourced from org repos; tags from topics or language, ignoring sentinel topic
@@ -330,11 +358,29 @@
 
 	const hasProjects = $derived(allProjects.length > 0);
 
-	const tagOptions = $derived(
-		Array.from(
-			new Set(allProjects.flatMap((project) => project.tags).filter((tag) => !hiddenTopics.includes(tag)))
-		)
+	const tagCountsNormalized = $derived(
+		allProjects.reduce((acc, project) => {
+			for (const tag of project.tags) {
+				const key = tag.trim();
+				if (hiddenTopics.includes(key.toLowerCase())) continue;
+				acc[key] = (acc[key] ?? 0) + 1;
+			}
+			return acc;
+		}, {} as Record<string, number>)
 	);
+
+	const tagOptions = $derived(
+		Object.keys(tagCountsNormalized).sort((a, b) => {
+			const diff = (tagCountsNormalized[b] ?? 0) - (tagCountsNormalized[a] ?? 0);
+			if (diff !== 0) return diff;
+			return a.localeCompare(b);
+		})
+	);
+
+	const MAX_VISIBLE_TAGS = 10;
+	const visibleTags = $derived(tagOptions.slice(0, MAX_VISIBLE_TAGS));
+	const overflowTags = $derived(tagOptions.slice(MAX_VISIBLE_TAGS));
+	const overflowHasTags = $derived(overflowTags.length > 0);
 
 	const tagPalette = [
 		'bg-rose-100 text-rose-900 border-rose-200',
@@ -422,15 +468,22 @@
 	let ownerFilter: OwnerFilter = $state('all');
 	let searchTerm = $state('');
 	let visibleCount = $state(6);
+	let moreTagsOpen = $state(false);
+	let tagSearchTerm = $state('');
+	let blogVisibleCount = $state(3);
+	let blogSearchTerm = $state('');
 
 	function toggleTag(tag: string) {
 		selectedTags = selectedTags.includes(tag)
 			? selectedTags.filter((value) => value !== tag)
 			: [...selectedTags, tag];
+		moreTagsOpen = false;
 	}
 
 	function clearTags() {
 		selectedTags = [];
+		tagSearchTerm = '';
+		moreTagsOpen = false;
 	}
 
 	function setOwner(filter: OwnerFilter) {
@@ -457,6 +510,19 @@
 	);
 	const visibleProjects = $derived(filteredWithSearch.slice(0, visibleCount));
 	const showSearch = $derived(filteredProjects.length > 6 || allProjects.length > 6);
+	const filteredBlogPosts = $derived(
+		renderedBlogPosts.filter((post) => {
+			const term = blogSearchTerm.trim().toLowerCase();
+			if (!term) return true;
+			return (
+				post.title.toLowerCase().includes(term) ||
+				(post.description ?? '').toLowerCase().includes(term) ||
+				(post.content ?? '').toLowerCase().includes(term)
+			);
+		})
+	);
+	const visibleBlogPosts = $derived(filteredBlogPosts.slice(0, blogVisibleCount));
+	const showBlogSearch = $derived(renderedBlogPosts.length > 3);
 
 	$effect(() => {
 		let list: Project[] = allProjects;
@@ -495,6 +561,11 @@
 		visibleCount = 6;
 	});
 
+	$effect(() => {
+		blogSearchTerm;
+		blogVisibleCount = 3;
+	});
+
 	// Client-side logging of org data for quick diagnostics
 	onMount(() => {
 		console.log(
@@ -526,7 +597,7 @@
 		name="description"
 		content="A club for all levels of open-source developers, from beginner projects to more advanced projects that require a group effort."
 	/>
-	<link rel="preconnect" href="https://avatars.githubusercontent.com" crossorigin />
+	<link rel="preconnect" href="https://avatars.githubusercontent.com" crossorigin="anonymous" />
 	<link rel="preconnect" href="https://github.com" />
 </svelte:head>
 
@@ -715,38 +786,6 @@
 				</div>
 			</div>
 			<div class="grid gap-6 lg:grid-cols-3">
-				{#each renderedBlogPosts as post}
-					<article
-						class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]"
-					>
-						<div
-							class="flex items-center justify-between text-xs font-semibold tracking-wide text-slate-600 uppercase"
-						>
-							<span>{post.date ?? 'Recent'}</span>
-							<div class="flex gap-2">
-								{#each post.tags ?? [] as tag}
-									<span class="rounded-full bg-slate-100 px-2 py-1 text-slate-700">{tag}</span>
-								{/each}
-							</div>
-						</div>
-						<h3 class="text-xl font-semibold">{post.title}</h3>
-						<p class="whitespace-pre-line text-slate-700">
-							{post.content ? summaryWithEllipsis(post.content) : post.excerpt}
-						</p>
-						{#if post.url}
-							<a
-								class="text-sm font-semibold underline decoration-slate-900 decoration-2 underline-offset-4"
-								href={post.url}
-								target="_blank"
-								rel="noreferrer"
-							>
-								Read more ->
-							</a>
-						{:else}
-							<span class="text-sm font-semibold text-slate-500">Read more coming soon</span>
-						{/if}
-					</article>
-				{/each}
 				{#if renderedBlogPosts.length === 0}
 					{#each Array(3) as _}
 						<div class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-slate-100 p-5 shadow-[6px_6px_0_#0f172a] animate-pulse">
@@ -759,8 +798,79 @@
 							<div class="h-4 w-20 rounded bg-slate-200"></div>
 						</div>
 					{/each}
+				{:else if filteredBlogPosts.length === 0}
+					<div class="rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]">
+						No blogs match your search yet.
+					</div>
+				{:else}
+					{#each visibleBlogPosts as post}
+						<article
+							class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]"
+						>
+							<div
+								class="flex items-center justify-between text-xs font-semibold tracking-wide text-slate-600 uppercase"
+							>
+								<span>{post.isNew ? 'NEW' : formatBlogDate(post.createdAt)}</span>
+								<div class="flex gap-2">
+									{#each post.tags ?? [] as tag}
+										<span class="rounded-full bg-slate-100 px-2 py-1 text-slate-700">{tag}</span>
+									{/each}
+								</div>
+							</div>
+							<h3 class="text-xl font-semibold">{post.title}</h3>
+							<p class="whitespace-pre-line text-slate-700">
+								{post.description ? summaryWithEllipsis(post.description) : summaryWithEllipsis(post.content)}
+							</p>
+							<a
+								class="text-sm font-semibold underline decoration-slate-900 decoration-2 underline-offset-4"
+								href={`/blog/${post.slug}`}
+							>
+								Read more ->
+							</a>
+						</article>
+					{/each}
 				{/if}
 			</div>
+			{#if showBlogSearch}
+				<div class="mt-4 flex flex-col gap-3">
+					<div
+						class="flex items-center gap-2 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[4px_4px_0_#0f172a]"
+					>
+						<svg viewBox="0 0 24 24" class="h-5 w-5 text-slate-700">
+							<path
+								fill="currentColor"
+								d="M15.5 14h-.79l-.28-.27a6.471 6.471 0 0 0 1.57-4.23A6.5 6.5 0 1 0 9.5 16a6.471 6.471 0 0 0 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5Zm-6 0C8.01 14 6 11.99 6 9.5S8.01 5 10.5 5 15 7.01 15 9.5 12.99 14 10.5 14Z"
+							/>
+						</svg>
+						<input
+							class="w-full bg-transparent text-sm font-semibold text-slate-900 placeholder:text-slate-500 focus:outline-none"
+							placeholder="Search blog posts"
+							type="text"
+							value={blogSearchTerm}
+							oninput={(event) => (blogSearchTerm = event.currentTarget.value)}
+						/>
+					</div>
+					{#if filteredBlogPosts.length > blogVisibleCount}
+						<button
+							class="w-full rounded-md border-2 border-slate-900 bg-white px-4 py-2 text-sm font-semibold shadow-[4px_4px_0_#0f172a] transition hover:-translate-y-[1px]"
+							type="button"
+							onclick={() => (blogVisibleCount += 3)}
+						>
+							Load more blogs
+						</button>
+					{/if}
+				</div>
+			{:else if filteredBlogPosts.length > blogVisibleCount}
+				<div class="mt-4 flex justify-center">
+					<button
+						class="rounded-md border-2 border-slate-900 bg-white px-4 py-2 text-sm font-semibold shadow-[4px_4px_0_#0f172a] transition hover:-translate-y-[1px]"
+						type="button"
+						onclick={() => (blogVisibleCount += 3)}
+					>
+						Load more blogs
+					</button>
+				</div>
+			{/if}
 		</section>
 
 		<section id="projects" class="space-y-5 py-10">
@@ -797,8 +907,8 @@
 				</div>
 			</div>
 
-			<div class="flex flex-wrap gap-2">
-				{#each tagOptions as tag}
+			<div class="flex flex-wrap items-center gap-2">
+				{#each visibleTags as tag}
 					<button
 						class={`rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold shadow-[3px_3px_0_#0f172a] transition ${
 							selectedTags.includes(tag)
@@ -807,9 +917,71 @@
 						}`}
 						onclick={() => toggleTag(tag)}
 					>
-						{tag}
+						{tag} ({tagCountsNormalized[tag] ?? 0})
 					</button>
 				{/each}
+				{#if overflowHasTags}
+					<div class="relative">
+						<button
+							class={`inline-flex items-center gap-1 rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold shadow-[3px_3px_0_#0f172a] transition ${
+								moreTagsOpen ? 'bg-slate-900 text-white' : 'bg-white text-slate-800 hover:-translate-y-[1px]'
+							}`}
+							onclick={() => (moreTagsOpen = !moreTagsOpen)}
+							aria-haspopup="listbox"
+							aria-expanded={moreTagsOpen}
+						>
+							More
+							<svg viewBox="0 0 16 16" class="h-4 w-4 fill-current">
+								<path d="M4 6l4 4 4-4z" />
+							</svg>
+						</button>
+						{#if moreTagsOpen}
+							<div
+								class="absolute z-20 mt-2 w-72 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[6px_6px_0_#0f172a]"
+								role="listbox"
+							>
+								<div class="flex items-center gap-2 rounded-md border border-slate-200 px-2 py-1">
+									<svg viewBox="0 0 24 24" class="h-4 w-4 text-slate-700">
+										<path
+											fill="currentColor"
+											d="M15.5 14h-.79l-.28-.27a6.471 6.471 0 0 0 1.57-4.23A6.5 6.5 0 1 0 9.5 16a6.471 6.471 0 0 0 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5Zm-6 0C8.01 14 6 11.99 6 9.5S8.01 5 10.5 5 15 7.01 15 9.5 12.99 14 10.5 14Z"
+										/>
+									</svg>
+									<input
+										class="w-full bg-transparent text-sm font-semibold text-slate-900 placeholder:text-slate-500 focus:outline-none"
+										placeholder="Search tags"
+										type="text"
+										value={tagSearchTerm}
+										oninput={(event) => (tagSearchTerm = event.currentTarget.value)}
+									/>
+								</div>
+								<div class="mt-2 max-h-60 space-y-1 overflow-y-auto">
+									{#each overflowTags.filter((tag) =>
+										tag.toLowerCase().includes(tagSearchTerm.trim().toLowerCase())
+									) as tag}
+										<button
+											class={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm font-semibold transition ${
+												selectedTags.includes(tag)
+													? 'bg-slate-900 text-white'
+													: 'hover:bg-slate-100 text-slate-800'
+											}`}
+											onclick={() => toggleTag(tag)}
+										>
+											<span>{tag}</span>
+											<span class="text-xs text-slate-600">
+												{tagCountsNormalized[tag] ?? 0}
+											</span>
+										</button>
+									{:else}
+										<div class="rounded-md bg-slate-50 px-2 py-2 text-xs font-semibold text-slate-500">
+											No tags match.
+										</div>
+									{/each}
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/if}
 				<button
 					class="rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold text-slate-800 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
 					onclick={clearTags}
@@ -868,7 +1040,7 @@
 								</div>
 							</div>
 							<div
-								class="rounded-md border-2 border-slate-900 bg-slate-50 p-3 shadow-[4px_4px_0_#0f172a]"
+								class="rounded-md bg-slate-50 p-3"
 							>
 								<p class="text-[11px] font-semibold text-slate-600 uppercase">Contributions</p>
 								<div class="mt-2 flex justify-center">
@@ -897,7 +1069,7 @@
 									</div>
 								</div>
 							</div>
-							<div class="grid gap-3 text-sm text-slate-700 md:grid-cols-2">
+							<div class="grid grid-cols-1 gap-3 text-sm text-slate-700 sm:grid-cols-2 md:grid-cols-3">
 								<div
 									class="flex h-full items-center justify-between rounded-md border-2 border-slate-900 bg-white px-3 py-2 shadow-[3px_3px_0_#0f172a]"
 									data-test="project-stars"
@@ -937,6 +1109,27 @@
 										<span class="text-[11px] uppercase">GitHub</span>
 										<span class="text-sm">Not linked</span>
 									</div>
+								{/if}
+								{#if project.externalUrl}
+									<a
+										class="flex h-full items-center justify-center gap-2 rounded-md border-2 border-slate-900 bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+										href={project.externalUrl}
+										target="_blank"
+										rel="noreferrer"
+										data-test="project-visit"
+									>
+										<span class="text-white">Visit Website</span>
+										<svg viewBox="0 0 20 20" class="h-4 w-4 fill-white">
+											<path
+												d="M12.5 3h4v4h-1.5V5.56l-6.22 6.22-1.06-1.06 6.22-6.22H12.5z"
+											/>
+											<path
+												d="M5 5.5h4v1.5H6.5v7h7V11h1.5v3.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z"
+											/>
+										</svg>
+									</a>
+								{:else}
+									<div class="h-full" aria-hidden="true"></div>
 								{/if}
 							</div>
 							<div class="flex flex-wrap gap-2">

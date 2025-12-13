@@ -1,4 +1,2 @@
-contributor-club/contrib.club
-contributor-club/.github
 NotReeceHarris/be-clippy.com
 doodad-labs/tor-nodes

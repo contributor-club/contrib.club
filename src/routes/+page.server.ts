@@ -9,6 +9,7 @@ type OrgRepo = {
 	language?: string | null;
 	updated_at?: string;
 	created_at?: string;
+	homepage?: string | null;
 };
 
 type MemberDetail = {
@@ -23,6 +24,17 @@ type MemberDetail = {
 };
 
 type RepoActivity = { days?: number[] };
+
+type BlogEntry = {
+	slug: string;
+	title: string;
+	description: string;
+	content: string;
+	author: string;
+	createdAt: string;
+	modifiedAt: string;
+	reactions: Record<string, number>;
+};
 
 async function fetchDailyCommitsForWindow(
 	parsed: { owner: string; repo: string },
@@ -120,6 +132,125 @@ function normalizeRepoUrl(value: string | undefined) {
 	return `https://github.com/${trimmed}`;
 }
 
+function normalizeHomepage(value: string | null | undefined) {
+	if (!value || typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed.replace(/^\/+/, '')}`;
+	try {
+		const url = new URL(withProtocol);
+		if (!url.hostname) return null;
+		url.hash = '';
+		return url.toString();
+	} catch {
+		return null;
+	}
+}
+
+function slugifyTitle(title: string, fallback: string) {
+	const base = title
+		.toLowerCase()
+		.replace(/[^a-z0-9\s-]/g, '')
+		.trim()
+		.replace(/\s+/g, '-')
+		.slice(0, 64);
+	const safeFallback = fallback.replace(/[^a-z0-9-]/gi, '') || 'post';
+	const slug = base || safeFallback.toLowerCase();
+	return slug || 'post';
+}
+
+function shortId() {
+	return Math.random().toString(36).slice(2, 8);
+}
+
+type DbBlogRow = {
+	slug?: string;
+	title?: string;
+	description?: string;
+	content?: string;
+	author?: string;
+	created_at?: string;
+	modified_at?: string;
+	reactions?: string | null;
+};
+
+function normalizeReactionCounts(obj: any): Record<string, number> {
+	const counts: Record<string, number> = {};
+	if (!obj || typeof obj !== 'object') return counts;
+	for (const [key, value] of Object.entries(obj)) {
+		const emoji = String(key);
+		const num = Number(value);
+		if (!emoji || Number.isNaN(num) || num <= 0) continue;
+		counts[emoji] = (counts[emoji] ?? 0) + Math.floor(num);
+	}
+	return counts;
+}
+
+function parseReactions(raw: string | null | undefined): Record<string, number> {
+	if (!raw) return {};
+	try {
+		const parsed = JSON.parse(raw);
+		if (Array.isArray(parsed)) {
+			return parsed.reduce((acc, emoji) => {
+				const key = String(emoji);
+				acc[key] = (acc[key] ?? 0) + 1;
+				return acc;
+			}, {} as Record<string, number>);
+		}
+		if (parsed && typeof parsed === 'object') {
+			if ('counts' in parsed) {
+				return normalizeReactionCounts((parsed as any).counts);
+			}
+			return normalizeReactionCounts(parsed);
+		}
+	} catch {
+		return {};
+	}
+	return {};
+}
+
+function mapDbBlog(row: DbBlogRow): BlogEntry | null {
+	if (!row?.slug || !row.title) return null;
+	let reactions: string[] = [];
+	const reactionCounts = parseReactions(row.reactions);
+	return {
+		slug: row.slug,
+		title: row.title,
+		description: row.description ?? '',
+		content: row.content ?? '',
+		author: row.author ?? 'contributor-club',
+		createdAt: row.created_at ?? new Date().toISOString(),
+		modifiedAt: row.modified_at ?? row.created_at ?? new Date().toISOString(),
+		reactions: reactionCounts
+	};
+}
+
+async function hydrateHomepages(
+	repos: OrgRepo[],
+	headers: Record<string, string>,
+	limit = 10
+) {
+	const missing = repos.filter((repo) => !normalizeHomepage(repo.homepage) && repo.html_url);
+	for (const repo of missing.slice(0, limit)) {
+		const parsed = parseRepo(repo.html_url);
+		if (!parsed) continue;
+		try {
+			const res = await fetch(
+				`https://api.github.com/repos/${parsed.owner}/${parsed.repo}`,
+				{ headers }
+			);
+			if (!res.ok) continue;
+			const repoData: OrgRepo = await res.json();
+			const homepage = normalizeHomepage(repoData.homepage ?? null);
+			if (homepage) {
+				repo.homepage = homepage;
+			}
+		} catch (error) {
+			console.error('Failed to hydrate homepage for', repo.html_url, error);
+		}
+	}
+}
+
 type Env = {
 	GITHUB_TOKEN?: string;
 	CACHE_DB?: any;
@@ -132,7 +263,7 @@ type CachedPayload = {
 	memberRepos: OrgRepo[];
 	orgMembers: { login: string; avatar_url: string; html_url: string }[];
 	memberDetails: MemberDetail[];
-	blogPosts: { title: string; excerpt: string; date?: string; url: string; content?: string }[];
+	blogPosts: BlogEntry[];
 };
 
 const memoryCache: { timestamp: number; payload: CachedPayload | null } = {
@@ -210,7 +341,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	let memberDetails: MemberDetail[] = [];
 	let orgRepos: OrgRepo[] = [];
 	let memberRepos: OrgRepo[] = [];
-	let blogPosts: { title: string; excerpt: string; date?: string; url: string; content?: string }[] = [];
+	let blogPosts: BlogEntry[] = [];
 	let fallbackRepoCache: string[] = [];
 	let fallbackRepoUrls: string[] = [];
 	let rateLimited = false;
@@ -285,7 +416,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 					topics: ['fallback'],
 					language: 'General',
 					updated_at: new Date().toISOString(),
-					created_at: new Date().toISOString()
+					created_at: new Date().toISOString(),
+					homepage: null
 				})),
 				memberRepos: [],
 				orgMembers: [],
@@ -409,7 +541,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 					topics: repo.topics ?? [],
 					language: repo.language,
 					updated_at: repo.updated_at,
-					created_at: (repo as any).created_at
+					created_at: (repo as any).created_at,
+					homepage: normalizeHomepage(repo.homepage ?? null)
 				}));
 
 				for (const repo of orgRepos) {
@@ -440,7 +573,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 				topics: ['fallback'],
 				language: 'General',
 				updated_at: new Date().toISOString(),
-				created_at: new Date().toISOString()
+				created_at: new Date().toISOString(),
+				homepage: null
 			}));
 		}
 	} catch (error) {
@@ -474,7 +608,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 								topics: repoData.topics ?? [],
 								language: repoData.language,
 								updated_at: repoData.updated_at,
-								created_at: (repoData as any).created_at
+								created_at: (repoData as any).created_at,
+								homepage: normalizeHomepage(repoData.homepage ?? null)
 							};
 						}
 
@@ -492,25 +627,26 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 						topics: ['fallback'],
 						language: 'General',
 						updated_at: new Date().toISOString(),
-						created_at: new Date().toISOString()
+						created_at: new Date().toISOString(),
+						homepage: null
 					};
 				})
 			);
 
-			fallbackRepos = fetchedFallbacks.filter((repo): repo is OrgRepo => Boolean(repo));
+			fallbackRepos = fetchedFallbacks.filter(Boolean) as OrgRepo[];
 		} catch (error) {
 			console.error('Failed to process fallback repos', error);
 		}
 
-		const orgRepoUrls = new Set(
-			orgRepos.map((repo) => repo.html_url).filter((url): url is string => Boolean(url))
-		);
-		for (const repo of fallbackRepos) {
-			const url = repo.html_url;
-			if (!url || orgRepoUrls.has(url)) continue;
-			orgRepos.push(repo);
-			orgRepoUrls.add(url);
-		}
+			const orgRepoUrls = new Set(
+				orgRepos.map((repo) => repo.html_url).filter((url): url is string => Boolean(url))
+			);
+			for (const repo of fallbackRepos) {
+				const url = repo.html_url;
+				if (!url || orgRepoUrls.has(url)) continue;
+				orgRepos.push(repo);
+				orgRepoUrls.add(url);
+			}
 
 		// Deduplicate org repos in case of overlap
 		orgRepos = Array.from(
@@ -555,7 +691,10 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 					memberRepoResults
 						.flat()
 						.filter((repo) => repo.html_url && !orgRepoUrls.has(repo.html_url))
-						.map((repo) => [repo.html_url as string, repo])
+						.map((repo) => [
+							repo.html_url as string,
+							{ ...repo, homepage: normalizeHomepage(repo.homepage ?? null) }
+						])
 				).values()
 			);
 
@@ -599,6 +738,9 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		forks += repoForks;
 	}
 
+	// Fill in missing homepage links (if any) to keep cache useful for visit buttons
+	await hydrateHomepages(combinedRepos, githubToken ? headers : publicHeaders, 12);
+
 	// Prepare per-repo activity cache (persisted daily to avoid API spam)
 	const activityCache = new Map<string, { activity: number[]; timestamp: number }>();
 	let activityTableReady = false;
@@ -609,18 +751,22 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 					'CREATE TABLE IF NOT EXISTS repo_activity_cache (repo_url TEXT PRIMARY KEY, activity TEXT, timestamp INTEGER)'
 				)
 				.run();
+			try {
 			const cachedRows = await d1
 				.prepare('SELECT repo_url, activity, timestamp FROM repo_activity_cache')
-				.all<{ repo_url: string; activity: string; timestamp: number }>();
+				.all();
 			activityTableReady = true;
-			for (const row of cachedRows?.results ?? []) {
+			for (const row of (cachedRows?.results as { repo_url: string; activity: string; timestamp: number }[] | undefined) ?? []) {
 				if (!row?.repo_url) continue;
 				try {
 					const parsed = row.activity ? (JSON.parse(row.activity) as number[]) : [];
 					activityCache.set(row.repo_url, { activity: parsed ?? [], timestamp: row.timestamp ?? 0 });
 				} catch (error) {
-					console.error('Failed to parse cached activity for', row.repo_url, error);
+						console.error('Failed to parse cached activity for', row.repo_url, error);
+					}
 				}
+			} catch (error) {
+				console.error('Failed to read activity cache rows', error);
 			}
 		} catch (error) {
 			console.error('Failed to initialize activity cache', error);
@@ -779,7 +925,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		}
 	}
 
-	// Fetch wiki pages as blog posts
+	// Fetch blogs (D1-backed; seeded from wiki as fallback)
+	let wikiBlogEntries: BlogEntry[] = [];
 	try {
 		const wikiOwner = org;
 		const wikiRepo = 'contrib.club.wiki';
@@ -793,68 +940,136 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 
 			const markdownFiles = files.filter((file) => file.type === 'file' && file.name.endsWith('.md'));
 
-			const posts = await Promise.all(
-				markdownFiles.map(async (file) => {
-					const rawUrl =
-						file.download_url ??
-						`https://raw.githubusercontent.com/${wikiOwner}/${wikiRepo}/master/${file.path}`;
-					let content = '';
-					try {
-						const contentRes = await fetch(rawUrl, { headers: githubToken ? headers : publicHeaders });
-						if (contentRes.ok) {
-							content = await contentRes.text();
+			wikiBlogEntries = (
+				await Promise.all(
+					markdownFiles.map(async (file) => {
+						const rawUrl =
+							file.download_url ??
+							`https://raw.githubusercontent.com/${wikiOwner}/${wikiRepo}/master/${file.path}`;
+						let content = '';
+						try {
+							const contentRes = await fetch(rawUrl, { headers: githubToken ? headers : publicHeaders });
+							if (contentRes.ok) {
+								content = await contentRes.text();
+							}
+						} catch (error) {
+							console.error('Failed to fetch wiki content for', file.path, error);
 						}
-					} catch (error) {
-						console.error('Failed to fetch wiki content for', file.path, error);
-					}
 
-					let latestDate: string | undefined;
-					try {
-						const commitRes = await fetch(
-							`https://api.github.com/repos/${wikiOwner}/${wikiRepo}/commits?path=${encodeURIComponent(file.path)}&per_page=1`,
-							{ headers: githubToken ? headers : publicHeaders }
-						);
-						if (commitRes.ok) {
-							const commits: { commit: { committer?: { date?: string }; author?: { date?: string } } }[] =
-								await commitRes.json();
-							latestDate =
-								commits[0]?.commit?.committer?.date ??
-								commits[0]?.commit?.author?.date ??
-								undefined;
+						let latestDate: string | undefined;
+						try {
+							const commitRes = await fetch(
+								`https://api.github.com/repos/${wikiOwner}/${wikiRepo}/commits?path=${encodeURIComponent(file.path)}&per_page=1`,
+								{ headers: githubToken ? headers : publicHeaders }
+							);
+							if (commitRes.ok) {
+								const commits: { commit: { committer?: { date?: string }; author?: { date?: string } } }[] =
+									await commitRes.json();
+								latestDate =
+									commits[0]?.commit?.committer?.date ??
+									commits[0]?.commit?.author?.date ??
+									undefined;
+							}
+						} catch (error) {
+							console.error('Failed to load wiki commit date for', file.path, error);
 						}
-					} catch (error) {
-						console.error('Failed to load wiki commit date for', file.path, error);
-					}
 
-					const lines = content
-						.split(/\r?\n/)
-						.map((line) => line.trim())
-						.filter(Boolean);
-					const heading = lines.find((line) => line.startsWith('#'))?.replace(/^#+\s*/, '');
-					const bodyLine = lines.find((line) => !line.startsWith('#'));
-					const fileTitle = file.name.replace(/\.md$/, '').replace(/[-_]/g, ' ');
-					const title = heading || fileTitle;
-					const excerpt = bodyLine || heading || 'Read more from the Contrib.Club wiki.';
-					const slug = file.name.replace(/\.md$/, '');
-					const url = `https://github.com/${wikiOwner}/contrib.club/wiki/${encodeURIComponent(slug)}`;
+						const lines = content
+							.split(/\r?\n/)
+							.map((line) => line.trim())
+							.filter(Boolean);
+						const heading = lines.find((line) => line.startsWith('#'))?.replace(/^#+\s*/, '');
+						const bodyLine = lines.find((line) => !line.startsWith('#'));
+						const fileTitle = file.name.replace(/\.md$/, '').replace(/[-_]/g, ' ');
+						const title = heading || fileTitle;
+						const description = bodyLine || heading || 'Read more from the Contrib.Club wiki.';
+						const rawSlug = file.name.replace(/\.md$/, '');
+						const slug = slugifyTitle(title, rawSlug || shortId());
+						const createdAt = latestDate ?? new Date().toISOString();
 
-					return { title, excerpt, date: latestDate, url, content };
-				})
-			);
-
-			blogPosts = posts
+						return {
+							slug,
+							title,
+							description,
+							content,
+							author: 'contributor-club',
+							createdAt,
+							modifiedAt: latestDate ?? createdAt,
+							reactions: {}
+						} satisfies BlogEntry;
+					})
+				)
+			)
 				.filter(Boolean)
-				.sort((a, b) => {
-					const aDate = a.date ? new Date(a.date).getTime() : 0;
-					const bDate = b.date ? new Date(b.date).getTime() : 0;
-					return bDate - aDate;
-				});
+				.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 		} else if (contentsRes.status === 403 || contentsRes.status === 429) {
 			rateLimited = true;
 		}
 	} catch (error) {
 		console.error('Failed to load wiki posts', error);
 	}
+
+const blogMap = new Map<string, BlogEntry>();
+
+	// Load from D1 if available
+	if (d1) {
+		try {
+			await d1
+				.prepare(
+					'CREATE TABLE IF NOT EXISTS blogs (slug TEXT PRIMARY KEY, title TEXT, description TEXT, content TEXT, author TEXT, created_at TEXT, modified_at TEXT, reactions TEXT)'
+				)
+				.run();
+			const rows = await d1
+				.prepare(
+					'SELECT slug, title, description, content, author, created_at, modified_at, reactions FROM blogs'
+				)
+				.all();
+			for (const row of (rows?.results as DbBlogRow[] | undefined) ?? []) {
+				const entry = mapDbBlog(row);
+				if (entry) blogMap.set(entry.slug, entry);
+			}
+		} catch (error) {
+			console.error('Failed to load blogs from D1', error);
+		}
+	}
+
+	// Seed missing entries from wiki into DB (or in-memory when D1 absent)
+	for (const entry of wikiBlogEntries) {
+		let slug = entry.slug;
+		while (blogMap.has(slug)) {
+			slug = `${entry.slug}-${shortId()}`;
+		}
+		const finalEntry = { ...entry, slug };
+		if (!blogMap.has(slug)) {
+			blogMap.set(slug, finalEntry);
+		}
+
+		if (d1) {
+			try {
+				await d1
+					.prepare(
+						'INSERT OR IGNORE INTO blogs (slug, title, description, content, author, created_at, modified_at, reactions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+					)
+					.bind(
+						finalEntry.slug,
+						finalEntry.title,
+						finalEntry.description,
+						finalEntry.content,
+						finalEntry.author,
+						finalEntry.createdAt,
+						finalEntry.modifiedAt,
+						JSON.stringify({ counts: finalEntry.reactions ?? {}, ipMap: {} })
+					)
+					.run();
+			} catch (error) {
+				console.error('Failed to seed wiki blog into D1', error);
+			}
+		}
+	}
+
+	blogPosts = Array.from(blogMap.values()).sort(
+		(a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+	);
 
 	const payload: CachedPayload = {
 		githubStats: { stars, forks, contributors: orgMembers },
