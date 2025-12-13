@@ -24,6 +24,69 @@ type MemberDetail = {
 
 type RepoActivity = { days?: number[] };
 
+async function fetchDailyCommitsForWindow(
+	parsed: { owner: string; repo: string },
+	headers: Record<string, string>,
+	days = 60,
+	now = Date.now()
+) {
+	const since = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+	const buckets = Array.from({ length: days }, () => 0);
+	const maxPages = 5;
+	for (let page = 1; page <= maxPages; page++) {
+		const res = await fetch(
+			`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/commits?since=${encodeURIComponent(
+				since
+			)}&per_page=100&page=${page}`,
+			{ headers }
+		);
+		if (!res.ok) break;
+		const items: { commit?: { committer?: { date?: string }; author?: { date?: string } } }[] = await res.json();
+		if (!Array.isArray(items) || items.length === 0) break;
+		for (const item of items) {
+			const dateString = item.commit?.committer?.date ?? item.commit?.author?.date;
+			if (!dateString) continue;
+			const ts = new Date(dateString).getTime();
+			const diffDays = Math.floor((now - ts) / (1000 * 60 * 60 * 24));
+			if (diffDays < 0 || diffDays >= days) continue;
+			const bucketIndex = days - 1 - diffDays;
+			buckets[bucketIndex] += 1;
+		}
+		const link = res.headers.get('link');
+		if (!link || !link.includes('rel="next"')) break;
+	}
+	return buckets;
+}
+
+function sleep(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchCommitActivityWithRetry(
+	parsed: { owner: string; repo: string },
+	headers: Record<string, string>,
+	attempts = 3
+) {
+	let lastStatus: number | undefined;
+	for (let i = 0; i < attempts; i++) {
+		const res = await fetch(
+			`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/stats/commit_activity`,
+			{ headers }
+		);
+		lastStatus = res.status;
+		if (res.status === 202) {
+			if (i < attempts - 1) await sleep(1200);
+			continue;
+		}
+		if (!res.ok) {
+			return { ok: false, status: res.status, text: await res.text() };
+		}
+		const weeks: RepoActivity[] = await res.json();
+		return { ok: true, status: res.status, weeks };
+	}
+	return { ok: false, status: lastStatus ?? 0, text: 'still 202 after retries' };
+}
+
 function parseRepo(url: string | undefined) {
 	if (!url) return null;
 	try {
@@ -77,9 +140,37 @@ const memoryCache: { timestamp: number; payload: CachedPayload | null } = {
 	payload: null
 };
 const CACHE_TTL = 1000 * 60 * 15; // 15 minutes cache freshness
+const ACTIVITY_TTL = 1000 * 60 * 60 * 24; // fetch contribution activity at most once per 24h
+const ACTIVITY_RETRY_TTL = 1000 * 60 * 15; // retry sooner when activity is missing
 const RATE_LIMIT_COOLDOWN = 1000 * 60 * 15; // 15 minutes before retrying after a 403/429
 let rateLimitUntil = 0;
 const D1_CACHE_KEY = 'github-cache';
+
+async function persistActivity(
+	d1: any,
+	activityTableReady: boolean,
+	activityCache: Map<string, { activity: number[]; timestamp: number }>,
+	repoUrl: string,
+	activity: number[],
+	timestamp: number
+) {
+	activityCache.set(repoUrl, { activity, timestamp });
+	const total = activity.reduce((sum, value) => sum + value, 0);
+	const hasData = activity.length > 0;
+	console.log('Activity cache update', { repoUrl, days: activity.length, total, timestamp, persisted: hasData });
+	if (!hasData) {
+		console.warn('Activity persistence skipped (no data yet)', { repoUrl, timestamp });
+	}
+	if (!hasData || !d1 || !activityTableReady) return;
+	try {
+		await d1
+			.prepare('INSERT OR REPLACE INTO repo_activity_cache (repo_url, activity, timestamp) VALUES (?, ?, ?)')
+			.bind(repoUrl, JSON.stringify(activity), timestamp)
+			.run();
+	} catch (error) {
+		console.error('Failed to persist activity for', repoUrl, error);
+	}
+}
 
 export const load: PageServerLoad = async ({ fetch, platform }) => {
 	// Cloudflare Worker secret is exposed via platform.env; fall back to process/import.meta for local dev
@@ -508,31 +599,158 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		forks += repoForks;
 	}
 
+	// Prepare per-repo activity cache (persisted daily to avoid API spam)
+	const activityCache = new Map<string, { activity: number[]; timestamp: number }>();
+	let activityTableReady = false;
+	if (d1) {
+		try {
+			await d1
+				.prepare(
+					'CREATE TABLE IF NOT EXISTS repo_activity_cache (repo_url TEXT PRIMARY KEY, activity TEXT, timestamp INTEGER)'
+				)
+				.run();
+			const cachedRows = await d1
+				.prepare('SELECT repo_url, activity, timestamp FROM repo_activity_cache')
+				.all<{ repo_url: string; activity: string; timestamp: number }>();
+			activityTableReady = true;
+			for (const row of cachedRows?.results ?? []) {
+				if (!row?.repo_url) continue;
+				try {
+					const parsed = row.activity ? (JSON.parse(row.activity) as number[]) : [];
+					activityCache.set(row.repo_url, { activity: parsed ?? [], timestamp: row.timestamp ?? 0 });
+				} catch (error) {
+					console.error('Failed to parse cached activity for', row.repo_url, error);
+				}
+			}
+		} catch (error) {
+			console.error('Failed to initialize activity cache', error);
+		}
+	}
+
 	// Fetch commit activity (last year) for all repos we know about
 	const allRepoUrls = combinedRepos.map((repo) => repo.html_url as string);
+	const activityFetchTime = Date.now();
+	const repoUrlsNeedingActivity: string[] = [];
+	const activityHeaders = githubToken ? headers : publicHeaders;
 
 	for (const repoUrl of allRepoUrls) {
+		const cached = activityCache.get(repoUrl);
+		const hasData = (cached?.activity?.length ?? 0) > 0;
+		const ttl = hasData ? ACTIVITY_TTL : ACTIVITY_RETRY_TTL;
+		const age = cached ? activityFetchTime - cached.timestamp : null;
+		console.log('Activity cache check', {
+			repoUrl,
+			hasCached: Boolean(cached),
+			hasData,
+			ageMs: age,
+			ttlMs: ttl
+		});
+		if (cached && activityFetchTime - cached.timestamp < ttl) {
+			const cachedActivity = cached?.activity ?? [];
+			repoStats[repoUrl] = {
+				...repoStats[repoUrl],
+				activity: cachedActivity
+			};
+			console.log('Activity cache hit', { repoUrl, days: cachedActivity.length });
+		} else {
+			console.log('Activity cache stale or missing; fetching', { repoUrl });
+			repoUrlsNeedingActivity.push(repoUrl);
+		}
+	}
+
+	for (const repoUrl of repoUrlsNeedingActivity) {
 		const parsed = parseRepo(repoUrl);
 		if (!parsed) continue;
 
 		try {
-			const activityRes = await fetch(
-				`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/stats/commit_activity`,
-				{ headers: githubToken ? headers : publicHeaders }
-			);
+			console.log('Activity fetch start', { repoUrl });
+			const activityResult = await fetchCommitActivityWithRetry(parsed, activityHeaders, 3);
 
-			if (activityRes.status === 202) {
-				console.warn('Commit activity still generating for', repoUrl);
+			if (activityResult.status === 202) {
+				console.warn('Commit activity still generating after retries for', repoUrl);
+				const cached = activityCache.get(repoUrl);
+				const fallbackActivity = cached?.activity ?? [];
+				if (fallbackActivity.length > 0) {
+					repoStats[repoUrl] = {
+						...repoStats[repoUrl],
+						activity: fallbackActivity
+					};
+					await persistActivity(d1, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
+					continue;
+				}
+
+				try {
+					const daily = await fetchDailyCommitsForWindow(parsed, activityHeaders, 60, activityFetchTime);
+					repoStats[repoUrl] = {
+						...repoStats[repoUrl],
+						activity: daily
+					};
+					console.log('Activity fallback via commits API (after 202)', {
+						repoUrl,
+						days: daily.length,
+						total: daily.reduce((sum, v) => sum + v, 0)
+					});
+					await persistActivity(d1, activityTableReady, activityCache, repoUrl, daily, activityFetchTime);
+					continue;
+				} catch (error) {
+					console.error('Fallback commit history failed for', repoUrl, error);
+					const emptyActivity: number[] = [];
+					repoStats[repoUrl] = { ...repoStats[repoUrl], activity: emptyActivity };
+					await persistActivity(
+						d1,
+						activityTableReady,
+						activityCache,
+						repoUrl,
+						emptyActivity,
+						activityFetchTime
+					);
+					continue;
+				}
+			}
+
+			if (!activityResult.ok) {
+				console.error('Activity fetch failed', repoUrl, activityResult.status, activityResult.text);
+				if (activityResult.status === 403 || activityResult.status === 429) rateLimited = true;
+				const cached = activityCache.get(repoUrl);
+				const fallbackActivity = cached?.activity ?? [];
+				if (fallbackActivity.length > 0) {
+					repoStats[repoUrl] = {
+						...repoStats[repoUrl],
+						activity: fallbackActivity
+					};
+					await persistActivity(d1, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
+					continue;
+				}
+
+				try {
+					const daily = await fetchDailyCommitsForWindow(parsed, activityHeaders, 60, activityFetchTime);
+					repoStats[repoUrl] = {
+						...repoStats[repoUrl],
+						activity: daily
+					};
+					console.log('Activity fallback via commits API (after error)', {
+						repoUrl,
+						days: daily.length,
+						total: daily.reduce((sum, v) => sum + v, 0)
+					});
+					await persistActivity(d1, activityTableReady, activityCache, repoUrl, daily, activityFetchTime);
+				} catch (error) {
+					console.error('Fallback commit history failed for', repoUrl, error);
+					const emptyActivity: number[] = [];
+					repoStats[repoUrl] = { ...repoStats[repoUrl], activity: emptyActivity };
+					await persistActivity(
+						d1,
+						activityTableReady,
+						activityCache,
+						repoUrl,
+						emptyActivity,
+						activityFetchTime
+					);
+				}
 				continue;
 			}
 
-			if (!activityRes.ok) {
-				console.error('Activity fetch failed', repoUrl, activityRes.status, await activityRes.text());
-				if (activityRes.status === 403 || activityRes.status === 429) rateLimited = true;
-				continue;
-			}
-
-			const weeks: RepoActivity[] = await activityRes.json();
+			const weeks: RepoActivity[] = activityResult.weeks ?? [];
 			if (!Array.isArray(weeks)) continue;
 
 			const activity = weeks.flatMap((week) => week.days ?? []).slice(-364);
@@ -542,8 +760,22 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 				forks: repoStats[repoUrl]?.forks ?? 0,
 				activity
 			};
+			console.log('Activity fetched via stats endpoint', {
+				repoUrl,
+				days: activity.length,
+				total: activity.reduce((sum, v) => sum + v, 0)
+			});
+
+			await persistActivity(d1, activityTableReady, activityCache, repoUrl, activity, activityFetchTime);
 		} catch (error) {
 			console.error('Failed to load commit activity for', repoUrl, error);
+			const cached = activityCache.get(repoUrl);
+			const fallbackActivity = cached?.activity ?? [];
+			repoStats[repoUrl] = {
+				...repoStats[repoUrl],
+				activity: fallbackActivity
+			};
+			await persistActivity(d1, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
 		}
 	}
 

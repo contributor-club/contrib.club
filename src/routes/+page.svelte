@@ -50,15 +50,15 @@
 
 	// Hero stat blocks derived from live GitHub data
 	const stats = $derived([
-		{ label: 'Stars', value: formatNumber(githubStats.stars), hint: 'Org-wide GitHub stars' },
-		{ label: 'Forks', value: formatNumber(githubStats.forks), hint: 'Org-wide forks' },
-		{ label: 'Members', value: formatNumber(githubStats.contributors), hint: 'GitHub org members' }
+		{ label: 'Stars', value: formatNumber(githubStats.stars), hint: 'Team GitHub stars' },
+		{ label: 'Forks', value: formatNumber(githubStats.forks), hint: 'Team GitHub forks' },
+		{ label: 'Members', value: formatNumber(githubStats.contributors), hint: 'Team GitHub members' }
 	]);
 
 	// Team member profiles from org data
 	const memberProfiles = $derived(
 		(memberDetails.length > 0 ? memberDetails : (data?.orgMembers ?? [])).map((member) => ({
-			name: 'name' in member ? (member as any).name ?? member.login : member.login,
+			name: 'name' in member ? ((member as any).name ?? member.login) : member.login,
 			handle: member.login,
 			avatar: `${member.avatar_url}&size=120`,
 			github: member.html_url,
@@ -77,12 +77,23 @@
 	let deleting = $state(false);
 	let pauseTicks = $state(0);
 
-	type BlogPost = { title: string; date?: string; excerpt: string; url: string; tags?: string[]; content?: string };
+	type BlogPost = {
+		title: string;
+		date?: string;
+		excerpt: string;
+		url: string;
+		tags?: string[];
+		content?: string;
+	};
 
 	let applyName = $state('');
 	let applyEmail = $state('');
 	let applyGithubUser = $state('');
-	let githubStatus = $state<{ state: 'idle' | 'loading' | 'valid' | 'invalid'; avatar?: string; name?: string }>({
+	let githubStatus = $state<{
+		state: 'idle' | 'loading' | 'valid' | 'invalid';
+		avatar?: string;
+		name?: string;
+	}>({
 		state: 'idle'
 	});
 	let formError = $state<string | null>(null);
@@ -132,7 +143,10 @@
 
 	// Normalizes GitHub input to a username
 	function sanitizeGithubUser(value: string): string | null {
-		const cleaned = value.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/^@/, '');
+		const cleaned = value
+			.trim()
+			.replace(/^https?:\/\/github\.com\//i, '')
+			.replace(/^@/, '');
 		if (!cleaned) return null;
 		const username = cleaned.split('/')[0];
 		return username.length ? username : null;
@@ -238,7 +252,11 @@
 				[...(orgRepos ?? []), ...(memberRepos ?? [])]
 					.filter((repo) => {
 						const topics = repo.topics ?? [];
-						return repo.html_url && !topics.includes('no.contrib.club') && !topics.includes('no-contrib-club');
+						return (
+							repo.html_url &&
+							!topics.includes('no.contrib.club') &&
+							!topics.includes('no-contrib-club')
+						);
 					})
 					.map((repo) => [repo.html_url as string, repo])
 			).values()
@@ -267,17 +285,54 @@
 	}
 
 	// Projects sourced from org repos; tags from topics or language, ignoring sentinel topic
-	const allProjects = $derived(buildProjects(orgRepos, memberRepos));
+	const rawProjects = $derived(buildProjects(orgRepos, memberRepos));
+
+	const tagCounts = $derived(
+		rawProjects.reduce((acc, project) => {
+			for (const tag of project.tags) {
+				const key = tag.trim().toLowerCase();
+				if (hiddenTopics.includes(key)) continue;
+				acc[key] = (acc[key] ?? 0) + 1;
+			}
+			return acc;
+		}, {} as Record<string, number>)
+	);
+
+	const tagAliasGroups: { label: string; aliases: string[] }[] = [
+		{ label: 'JavaScript', aliases: ['javascript', 'js', 'javscript'] },
+		{ label: 'Node.js', aliases: ['node', 'nodejs', 'node.js'] }
+	];
+
+	function normalizeTag(tag: string, counts: Record<string, number>) {
+		const key = tag.trim().toLowerCase();
+		const group = tagAliasGroups.find((entry) => entry.aliases.includes(key));
+		if (!group) return tag;
+		let bestTag = group.label;
+		let bestCount = -1;
+		for (const alias of group.aliases) {
+			const count = counts[alias] ?? 0;
+			if (count > bestCount) {
+				bestCount = count;
+				bestTag = group.label === alias ? group.label : alias;
+			}
+		}
+		return bestTag;
+	}
+
+	const allProjects = $derived(
+		rawProjects.map((project) => {
+			const normalizedTags = Array.from(
+				new Set(project.tags.map((tag) => normalizeTag(tag, tagCounts)))
+			);
+			return { ...project, tags: normalizedTags };
+		})
+	);
 
 	const hasProjects = $derived(allProjects.length > 0);
 
 	const tagOptions = $derived(
 		Array.from(
-			new Set(
-				allProjects
-					.flatMap((project) => project.tags)
-					.filter((tag) => !hiddenTopics.includes(tag))
-			)
+			new Set(allProjects.flatMap((project) => project.tags).filter((tag) => !hiddenTopics.includes(tag)))
 		)
 	);
 
@@ -322,6 +377,15 @@
 		return Array.from({ length: DAYS_IN_WINDOW }, () => 0);
 	}
 
+	function contributionsLastWindow(project: Project): number {
+		const activity = repoStats[project.github]?.activity ?? [];
+		return activity.slice(-DAYS_IN_WINDOW).reduce((sum, value) => sum + value, 0);
+	}
+
+	function starCount(project: Project): number {
+		return repoStats[project.github]?.stars ?? 0;
+	}
+
 	onMount(() => {
 		const id = setInterval(() => {
 			const current = greetings[greetingIndex];
@@ -349,7 +413,9 @@
 			}
 		}, 140);
 
-		return () => clearInterval(id);
+		return () => {
+			clearInterval(id);
+		};
 	});
 
 	let selectedTags: string[] = $state([]);
@@ -371,8 +437,13 @@
 		ownerFilter = filter;
 	}
 
-	type FilterTab = 'all' | 'popular' | 'new';
+	type FilterTab = 'all' | 'popular' | 'contributions';
 	let activeFilter: FilterTab = $state('all');
+	const filterTabs: { id: FilterTab; label: string; tooltip?: string }[] = [
+		{ id: 'all', label: 'All' },
+		{ id: 'popular', label: 'Popular', tooltip: 'Most GitHub stars' },
+		{ id: 'contributions', label: 'Active', tooltip: 'Most changes made (last 60 days)' }
+	];
 
 	let filteredProjects: Project[] = $state([]);
 	const filteredWithSearch = $derived(
@@ -380,8 +451,7 @@
 			if (!searchTerm.trim()) return true;
 			const term = searchTerm.toLowerCase();
 			return (
-				project.title.toLowerCase().includes(term) ||
-				project.summary.toLowerCase().includes(term)
+				project.title.toLowerCase().includes(term) || project.summary.toLowerCase().includes(term)
 			);
 		})
 	);
@@ -391,19 +461,20 @@
 	$effect(() => {
 		let list: Project[] = allProjects;
 
-		if (activeFilter === 'new') {
+		if (activeFilter === 'popular') {
 			list = [...allProjects].sort((a, b) => {
-				const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
-				const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
-				return bCreated - aCreated;
+				const starDiff = starCount(b) - starCount(a);
+				if (starDiff !== 0) return starDiff;
+				const contribDiff = contributionsLastWindow(b) - contributionsLastWindow(a);
+				if (contribDiff !== 0) return contribDiff;
+				const aUpdated = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+				const bUpdated = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+				return bUpdated - aUpdated;
 			});
-		} else if (activeFilter === 'popular') {
+		} else if (activeFilter === 'contributions') {
 			list = [...allProjects].sort((a, b) => {
-				const aActivity = repoStats[a.github]?.activity ?? [];
-				const bActivity = repoStats[b.github]?.activity ?? [];
-				const aRecent = aActivity.slice(-DAYS_IN_WINDOW).reduce((sum, value) => sum + value, 0);
-				const bRecent = bActivity.slice(-DAYS_IN_WINDOW).reduce((sum, value) => sum + value, 0);
-				if (bRecent !== aRecent) return bRecent - aRecent;
+				const contribDiff = contributionsLastWindow(b) - contributionsLastWindow(a);
+				if (contribDiff !== 0) return contribDiff;
 				const aUpdated = a.updated_at ? new Date(a.updated_at).getTime() : 0;
 				const bUpdated = b.updated_at ? new Date(b.updated_at).getTime() : 0;
 				return bUpdated - aUpdated;
@@ -455,33 +526,59 @@
 		name="description"
 		content="A club for all levels of open-source developers, from beginner projects to more advanced projects that require a group effort."
 	/>
+	<link rel="preconnect" href="https://avatars.githubusercontent.com" crossorigin />
+	<link rel="preconnect" href="https://github.com" />
 </svelte:head>
 
 <div class="min-h-screen bg-[#f7f7f2] text-slate-900">
 	<a
-		class="fixed right-4 top-4 z-50 inline-flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white px-4 py-2 text-sm font-semibold shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px] hover:shadow-[8px_8px_0_#0f172a]"
+		class="fixed top-4 right-4 z-50 inline-flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white px-4 py-2 text-sm font-semibold shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px] hover:shadow-[8px_8px_0_#0f172a]"
 		href="https://github.com/contributor-club/contrib.club"
 		target="_blank"
 		rel="noreferrer"
 		aria-label="Fork this project on GitHub"
 	>
 		View Source
-		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" class="h-4 w-4 fill-current" role="img" aria-hidden="true">
+		<svg
+			xmlns="http://www.w3.org/2000/svg"
+			viewBox="0 0 16 16"
+			class="h-4 w-4 fill-current"
+			role="img"
+			aria-hidden="true"
+		>
 			<path
 				fill-rule="evenodd"
 				d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.54 5.47 7.6.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.19 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
 			/>
 		</svg>
 	</a>
-	<main class="mx-auto max-w-6xl px-5 pb-20 mt-10">
-		<section class="flex min-h-[70vh] flex-col items-center gap-10 border-b-2 border-slate-900 py-16 text-center">
-
-			<div class="mt-6 flex items-center justify-center gap-4">
+	<main class="mx-auto mt-10 max-w-6xl px-5 pb-20">
+		<section
+			class="flex min-h-[70vh] flex-col items-center gap-10 border-b-2 border-slate-900 py-16 text-center"
+		>
+			<!-- Logo idea 
+			 <div class="flex items-center justify-center gap-4">
+				<div
+					class="h-16 w-16 rounded-md border-2 border-slate-900 bg-slate-100 shadow-[4px_4px_0_#0f172a]"
+				>
+					<img
+						alt="Organisation"
+						class="h-full w-full rounded-[4px] object-cover"
+						src="https://github.com/contributor-club.png?size=120"
+						loading="lazy"
+					/>
+				</div>
+			</div>
+			-->
+			<!-- Team member profiles -->
+			<div class="mt-2 flex items-center justify-center gap-4">
 				{#if memberProfiles.length === 0}
-					<div class="h-16 w-16 rounded-md border-2 border-slate-900 bg-slate-100 shadow-[4px_4px_0_#0f172a] animate-pulse"></div>
+					<div
+						class="h-16 w-16 animate-pulse rounded-md border-2 border-slate-900 bg-slate-100 shadow-[4px_4px_0_#0f172a]"
+					></div>
 				{:else}
 					{#each memberProfiles as person}
-						<div class="relative tooltip">
+						<div class="tooltip relative">
 							<div
 								class="h-16 w-16 rounded-md border-2 border-slate-900 bg-white shadow-[4px_4px_0_#0f172a]"
 							>
@@ -490,9 +587,12 @@
 									class="h-full w-full rounded-[4px] object-cover"
 									src={person.avatar}
 									loading="lazy"
+									decoding="async"
 								/>
 							</div>
-							<div class="tooltip-bubble absolute left-1/2 top-full z-10 mt-2 w-56 -translate-x-1/2 rounded-md border-2 border-slate-900 bg-white p-3 text-left text-sm font-semibold text-slate-800 shadow-[5px_5px_0_#0f172a]">
+							<div
+								class="tooltip-bubble absolute top-full left-1/2 z-10 mt-2 w-56 -translate-x-1/2 rounded-md border-2 border-slate-900 bg-white p-3 text-left text-sm font-semibold text-slate-800 shadow-[5px_5px_0_#0f172a]"
+							>
 								<div class="flex items-center justify-between">
 									<span>{person.name}</span>
 									<span class="text-xs text-slate-500">@{person.handle}</span>
@@ -509,8 +609,11 @@
 				{/if}
 			</div>
 
-			<div class="space-y-4 mt-10">
-				<h1 class="flex items-center justify-center gap-3 text-5xl font-semibold sm:text-6xl" data-test="hero-heading">
+			<div class="mt-10 space-y-4">
+				<h1
+					class="flex items-center justify-center gap-3 text-5xl font-semibold sm:text-6xl"
+					data-test="hero-heading"
+				>
 					<span>👋</span>
 					<span class="whitespace-nowrap">{typingText}<span class="cursor">|</span></span>
 				</h1>
@@ -518,7 +621,8 @@
 					A club for open-source contributors.
 				</p>
 				<p class="text-lg text-slate-700" data-test="hero-description">
-					A club for all levels of open-source developers, from beginner projects to more advanced projects that require a group effort.
+					A club for all levels of open-source developers, from beginner projects to more advanced
+					projects that require a group effort.
 				</p>
 			</div>
 
@@ -529,7 +633,9 @@
 				.tooltip .tooltip-bubble {
 					opacity: 0;
 					transform: translateY(4px);
-					transition: opacity 120ms ease, transform 120ms ease;
+					transition:
+						opacity 120ms ease,
+						transform 120ms ease;
 				}
 				.tooltip:hover .tooltip-bubble,
 				.tooltip:focus-within .tooltip-bubble {
@@ -551,20 +657,41 @@
 					-webkit-box-orient: vertical;
 					overflow: hidden;
 				}
+				.contrib-viewport {
+					width: 100%;
+					max-width: 100%;
+					margin-inline: auto;
+					overflow-x: auto;
+					overflow-y: hidden;
+					display: flex;
+					justify-content: center;
+					padding-inline: clamp(4px, 2vw, 12px);
+				}
+				.contrib-grid {
+					width: fit-content;
+					min-width: fit-content;
+				}
 			</style>
 
-		<div class="mt-10 grid w-full max-w-3xl gap-4 sm:grid-cols-3">
-			{#if statsReady}
-				{#each stats as stat}
-						<div class="rounded-lg border-2 border-slate-900 bg-white p-5 text-left shadow-[6px_6px_0_#0f172a]" data-test={`stat-${stat.label.toLowerCase()}`}>
-							<p class="text-xs font-semibold uppercase tracking-wide text-slate-600">{stat.label}</p>
+			<div class="mt-10 grid w-full max-w-3xl gap-4 sm:grid-cols-3">
+				{#if statsReady}
+					{#each stats as stat}
+						<div
+							class="rounded-lg border-2 border-slate-900 bg-white p-5 text-left shadow-[6px_6px_0_#0f172a]"
+							data-test={`stat-${stat.label.toLowerCase()}`}
+						>
+							<p class="text-xs font-semibold tracking-wide text-slate-600 uppercase">
+								{stat.label}
+							</p>
 							<p class="mt-2 text-2xl font-semibold" data-test="stat-value">{stat.value}</p>
 							<p class="text-sm text-slate-600" data-test="stat-hint">{stat.hint}</p>
 						</div>
 					{/each}
 				{:else}
 					{#each Array(3) as _}
-						<div class="h-24 rounded-lg border-2 border-slate-900 bg-slate-100 shadow-[6px_6px_0_#0f172a] animate-pulse"></div>
+						<div
+							class="h-24 animate-pulse rounded-lg border-2 border-slate-900 bg-slate-100 shadow-[6px_6px_0_#0f172a]"
+						></div>
 					{/each}
 				{/if}
 			</div>
@@ -580,15 +707,21 @@
 		<section id="blog" class="space-y-5 border-t-2 border-slate-900 py-10">
 			<div class="flex items-center justify-between">
 				<div>
-					<p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Our Blog</p>
+					<p class="text-xs font-semibold tracking-wide text-slate-500 uppercase">Our Blog</p>
 					<h2 class="text-3xl font-semibold">Notes from the team</h2>
-					<p class="text-slate-700">Releases, projects, and practices brought to you by the Contrib.Club team.</p>
+					<p class="text-slate-700">
+						Releases, projects, and practices brought to you by the Contrib.Club team.
+					</p>
 				</div>
 			</div>
 			<div class="grid gap-6 lg:grid-cols-3">
 				{#each renderedBlogPosts as post}
-					<article class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]">
-						<div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600">
+					<article
+						class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]"
+					>
+						<div
+							class="flex items-center justify-between text-xs font-semibold tracking-wide text-slate-600 uppercase"
+						>
 							<span>{post.date ?? 'Recent'}</span>
 							<div class="flex gap-2">
 								{#each post.tags ?? [] as tag}
@@ -597,12 +730,12 @@
 							</div>
 						</div>
 						<h3 class="text-xl font-semibold">{post.title}</h3>
-						<p class="text-slate-700 whitespace-pre-line">
+						<p class="whitespace-pre-line text-slate-700">
 							{post.content ? summaryWithEllipsis(post.content) : post.excerpt}
 						</p>
 						{#if post.url}
 							<a
-								class="text-sm font-semibold underline decoration-2 decoration-slate-900 underline-offset-4"
+								class="text-sm font-semibold underline decoration-slate-900 decoration-2 underline-offset-4"
 								href={post.url}
 								target="_blank"
 								rel="noreferrer"
@@ -614,30 +747,49 @@
 						{/if}
 					</article>
 				{/each}
+				{#if renderedBlogPosts.length === 0}
+					{#each Array(3) as _}
+						<div class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-slate-100 p-5 shadow-[6px_6px_0_#0f172a] animate-pulse">
+							<div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600">
+								<span class="h-3 w-20 rounded bg-slate-200"></span>
+								<span class="h-3 w-16 rounded bg-slate-200"></span>
+							</div>
+							<div class="h-5 w-2/3 rounded bg-slate-200"></div>
+							<div class="h-12 w-full rounded bg-slate-200"></div>
+							<div class="h-4 w-20 rounded bg-slate-200"></div>
+						</div>
+					{/each}
+				{/if}
 			</div>
 		</section>
 
 		<section id="projects" class="space-y-5 py-10">
 			<div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
 				<div>
-					<p class="text-xs font-semibold uppercase tracking-wide text-slate-500">The Projects</p>
+					<p class="text-xs font-semibold tracking-wide text-slate-500 uppercase">The Projects</p>
 					<h2 class="text-3xl font-semibold">Our Projects & Services</h2>
 					<p class="text-slate-700">
-						<b>We're not slow.</b> We build and ship open-source projects that solve <i>real problems</i> for developers. <b>Fast!</b>
+						<b>We're not slow.</b> We build and ship open-source projects that solve
+						<i>real problems</i>
+						for developers. <b>Fast!</b>
 					</p>
 				</div>
-				<div class="flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white p-1 shadow-[4px_4px_0_#0f172a]">
-					{#each ['all', 'popular', 'new'] as filter}
+				<div
+					class="flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white p-1 shadow-[4px_4px_0_#0f172a]"
+				>
+					{#each filterTabs as tab}
 						<button
-							class={`relative tooltip rounded-full px-3 py-1 text-sm font-semibold ${
-								activeFilter === filter ? 'bg-slate-900 text-white' : 'text-slate-800'
+							class={`tooltip relative rounded-full px-3 py-1 text-sm font-semibold ${
+								activeFilter === tab.id ? 'bg-slate-900 text-white' : 'text-slate-800'
 							}`}
-							onclick={() => (activeFilter = filter as FilterTab)}
+							onclick={() => (activeFilter = tab.id)}
 						>
-							{filter === 'all' ? 'All' : filter === 'popular' ? 'Popular' : 'New'}
-							{#if filter !== 'all'}
-								<span class="tooltip-bubble absolute left-1/2 top-full z-10 mt-2 min-w-[160px] -translate-x-1/2 rounded-md border-2 border-slate-900 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-[4px_4px_0_#0f172a]">
-									{filter === 'popular' ? 'Most changes made (last 60 days)' : 'Most recently created'}
+							{tab.label}
+							{#if tab.tooltip}
+								<span
+									class="tooltip-bubble absolute top-full left-1/2 z-10 mt-2 min-w-[160px] -translate-x-1/2 rounded-md border-2 border-slate-900 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-[4px_4px_0_#0f172a]"
+								>
+									{tab.tooltip}
 								</span>
 							{/if}
 						</button>
@@ -651,13 +803,13 @@
 						class={`rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold shadow-[3px_3px_0_#0f172a] transition ${
 							selectedTags.includes(tag)
 								? 'bg-slate-900 text-white'
-							: 'bg-white text-slate-800 hover:-translate-y-[1px]'
-					}`}
-					onclick={() => toggleTag(tag)}
-				>
-					{tag}
-				</button>
-			{/each}
+								: 'bg-white text-slate-800 hover:-translate-y-[1px]'
+						}`}
+						onclick={() => toggleTag(tag)}
+					>
+						{tag}
+					</button>
+				{/each}
 				<button
 					class="rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold text-slate-800 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
 					onclick={clearTags}
@@ -669,7 +821,9 @@
 			{#if showSearch}
 				<div class="mt-3">
 					<label class="sr-only" for="project-search">Search projects</label>
-					<div class="flex items-center gap-2 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[4px_4px_0_#0f172a]">
+					<div
+						class="flex items-center gap-2 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[4px_4px_0_#0f172a]"
+					>
 						<svg viewBox="0 0 24 24" class="h-5 w-5 text-slate-700">
 							<path
 								fill="currentColor"
@@ -691,7 +845,9 @@
 			<div class="grid gap-5 lg:grid-cols-2">
 				{#if !hasProjects}
 					{#each Array(4) as _}
-						<div class="h-44 rounded-lg border-2 border-slate-900 bg-slate-100 shadow-[6px_6px_0_#0f172a] animate-pulse"></div>
+						<div
+							class="h-44 animate-pulse rounded-lg border-2 border-slate-900 bg-slate-100 shadow-[6px_6px_0_#0f172a]"
+						></div>
 					{/each}
 				{:else if filteredWithSearch.length === 0}
 					<div class="rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a]">
@@ -699,41 +855,59 @@
 					</div>
 				{:else}
 					{#each visibleProjects as project}
-						<article class="flex flex-col gap-4 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px]" data-test="project-card">
+						<article
+							class="flex flex-col gap-4 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px]"
+							data-test="project-card"
+						>
 							<div class="flex items-center justify-between">
 								<div class="space-y-1">
 									<h3 class="text-2xl font-semibold">{project.title}</h3>
-									<p class="project-summary text-sm text-slate-700">{summaryWithEllipsis(project.summary)}</p>
+									<p class="project-summary text-sm text-slate-700">
+										{summaryWithEllipsis(project.summary)}
+									</p>
 								</div>
 							</div>
-							<div class="rounded-md border-2 border-slate-900 bg-slate-50 p-3 shadow-[4px_4px_0_#0f172a]">
-								<p class="text-[11px] font-semibold uppercase text-slate-600">Contributions</p>
+							<div
+								class="rounded-md border-2 border-slate-900 bg-slate-50 p-3 shadow-[4px_4px_0_#0f172a]"
+							>
+								<p class="text-[11px] font-semibold text-slate-600 uppercase">Contributions</p>
 								<div class="mt-2 flex justify-center">
-									<div class="grid min-h-[56px] grid-flow-col auto-cols-[16px] grid-rows-3 gap-1 pr-2">
-										{#each contributionBlocks(project.title, repoStats[project.github]?.activity) as intensity}
-											<div
-												aria-label="Contribution block"
-												class={`h-4 w-4 rounded-sm border border-slate-200 ${
-													intensity === 0
-														? 'bg-slate-200'
-														: intensity === 1
-															? 'bg-emerald-200'
-															: intensity === 2
-																? 'bg-emerald-400'
-																: 'bg-emerald-600'
-												}`}
-												data-test="contrib-block"
-											></div>
-										{/each}
+									<div
+										class="contrib-viewport"
+									>
+										<div
+											class="contrib-grid grid min-h-[56px] auto-cols-[16px] grid-flow-col grid-rows-3 gap-1 px-1 sm:px-0"
+										>
+											{#each contributionBlocks(project.title, repoStats[project.github]?.activity) as intensity}
+												<div
+													aria-label="Contribution block"
+													class={`h-4 w-4 rounded-sm border border-slate-200 ${
+														intensity === 0
+															? 'bg-slate-200'
+															: intensity === 1
+																? 'bg-emerald-200'
+																: intensity === 2
+																	? 'bg-emerald-400'
+																	: 'bg-emerald-600'
+													}`}
+													data-test="contrib-block"
+												></div>
+											{/each}
+										</div>
 									</div>
 								</div>
 							</div>
 							<div class="grid gap-3 text-sm text-slate-700 md:grid-cols-2">
-								<div class="flex h-full items-center justify-between rounded-md border-2 border-slate-900 bg-white px-3 py-2 shadow-[3px_3px_0_#0f172a]" data-test="project-stars">
-									<span class="text-[11px] font-semibold uppercase text-slate-600">Stars</span>
+								<div
+									class="flex h-full items-center justify-between rounded-md border-2 border-slate-900 bg-white px-3 py-2 shadow-[3px_3px_0_#0f172a]"
+									data-test="project-stars"
+								>
+									<span class="text-[11px] font-semibold text-slate-600 uppercase">Stars</span>
 									<span class="flex items-center gap-1 text-base font-semibold">
 										<svg viewBox="0 0 24 24" class="h-4 w-4 fill-current text-rose-500">
-											<path d="M12 21s-5.29-2.95-8.13-6.51C1.95 12.36 1 10.56 1 8.6 1 5.5 3.38 3 6.4 3 8.3 3 9.9 4 11 5.5 12.1 4 13.7 3 15.6 3 18.62 3 21 5.5 21 8.6c0 1.96-.95 3.76-2.87 5.89C17.29 18.05 12 21 12 21Z" />
+											<path
+												d="M12 21s-5.29-2.95-8.13-6.51C1.95 12.36 1 10.56 1 8.6 1 5.5 3.38 3 6.4 3 8.3 3 9.9 4 11 5.5 12.1 4 13.7 3 15.6 3 18.62 3 21 5.5 21 8.6c0 1.96-.95 3.76-2.87 5.89C17.29 18.05 12 21 12 21Z"
+											/>
 										</svg>
 										{(repoStats[project.github]?.stars ?? 0).toLocaleString()}
 									</span>
@@ -745,7 +919,7 @@
 										target="_blank"
 										rel="noreferrer"
 									>
-										<span class="text-[11px] uppercase text-slate-600">GitHub</span>
+										<span class="text-[11px] text-slate-600 uppercase">GitHub</span>
 										<span class="flex items-center gap-2 text-sm font-semibold">
 											Repo
 											<svg viewBox="0 0 16 16" class="h-4 w-4 fill-current">
@@ -757,7 +931,9 @@
 										</span>
 									</a>
 								{:else}
-									<div class="flex h-full items-center justify-between rounded-md border-2 border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500 shadow-[3px_3px_0_#0f172a]">
+									<div
+										class="flex h-full items-center justify-between rounded-md border-2 border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500 shadow-[3px_3px_0_#0f172a]"
+									>
 										<span class="text-[11px] uppercase">GitHub</span>
 										<span class="text-sm">Not linked</span>
 									</div>
@@ -772,7 +948,9 @@
 									</span>
 								{/each}
 								{#if project.tags.length > 3}
-									<span class="rounded-sm border border-slate-300 bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-800 shadow-[2px_2px_0_#0f172a]">
+									<span
+										class="rounded-sm border border-slate-300 bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-800 shadow-[2px_2px_0_#0f172a]"
+									>
 										+{project.tags.length - 3}
 									</span>
 								{/if}
@@ -794,18 +972,21 @@
 			{/if}
 		</section>
 		<section id="apply" class="space-y-6 border-t-2 border-slate-900 py-10">
-			<div class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[8px_8px_0_#0f172a]">
-				<p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Join the team</p>
+			<div
+				class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[8px_8px_0_#0f172a]"
+			>
+				<p class="text-xs font-semibold tracking-wide text-slate-500 uppercase">Join the team</p>
 				<h2 class="text-3xl font-semibold">Build with Contrib.Club</h2>
 				<p class="text-slate-700">
-					We look for contributors who ship regularly, care about quality, and can own an idea end-to-end. Drop your GitHub, and we’ll review your work before inviting you to the org.
+					We look for contributors who ship regularly, care about quality, and can own an idea
+					end-to-end. Drop your GitHub, and we’ll review your work before inviting you to the org.
 				</p>
 				<form class="mt-4 grid gap-4 md:grid-cols-2" onsubmit={submitApplication}>
 					<div class="md:col-span-1">
 						<label class="text-sm text-slate-700" for="app-name">Full name</label>
 						<input
 							id="app-name"
-							class="mt-2 w-full rounded-lg border-2 border-slate-900 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 shadow-[3px_3px_0_#0f172a] focus:border-slate-700 focus:outline-none"
+							class="mt-2 w-full rounded-lg border-2 border-slate-900 bg-white px-3 py-2 text-slate-900 shadow-[3px_3px_0_#0f172a] placeholder:text-slate-400 focus:border-slate-700 focus:outline-none"
 							placeholder="Your name"
 							type="text"
 							value={applyName}
@@ -816,7 +997,7 @@
 						<label class="text-sm text-slate-700" for="app-email">Email</label>
 						<input
 							id="app-email"
-							class="mt-2 w-full rounded-lg border-2 border-slate-900 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 shadow-[3px_3px_0_#0f172a] focus:border-slate-700 focus:outline-none"
+							class="mt-2 w-full rounded-lg border-2 border-slate-900 bg-white px-3 py-2 text-slate-900 shadow-[3px_3px_0_#0f172a] placeholder:text-slate-400 focus:border-slate-700 focus:outline-none"
 							placeholder="you@example.com"
 							type="email"
 							value={applyEmail}
@@ -825,9 +1006,13 @@
 					</div>
 					<div class="md:col-span-2">
 						<label class="text-sm text-slate-700" for="app-github">GitHub profile</label>
-						<div class="mt-2 flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[3px_3px_0_#0f172a] sm:flex-row sm:items-center">
+						<div
+							class="mt-2 flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[3px_3px_0_#0f172a] sm:flex-row sm:items-center"
+						>
 							{#if githubStatus.state === 'valid'}
-								<div class="flex w-full items-center gap-3 rounded-md border-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 shadow-[3px_3px_0_#0f172a]">
+								<div
+									class="flex w-full items-center gap-3 rounded-md border-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 shadow-[3px_3px_0_#0f172a]"
+								>
 									<span class="text-emerald-700">✓</span>
 									{#if githubStatus.avatar}
 										<img
@@ -846,7 +1031,9 @@
 									Remove
 								</button>
 							{:else}
-								<div class="flex w-full items-center gap-2 rounded-md border-2 border-slate-900 bg-slate-50 px-2 py-2">
+								<div
+									class="flex w-full items-center gap-2 rounded-md border-2 border-slate-900 bg-slate-50 px-2 py-2"
+								>
 									<span class="shrink-0 text-sm font-semibold text-slate-700">github.com/</span>
 									<input
 										id="app-github"
@@ -869,7 +1056,9 @@
 								</button>
 							{/if}
 							{#if githubStatus.state === 'invalid'}
-								<div class="rounded-md border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 shadow-[3px_3px_0_#0f172a]">
+								<div
+									class="rounded-md border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 shadow-[3px_3px_0_#0f172a]"
+								>
 									Could not find that GitHub account
 								</div>
 							{/if}
@@ -877,16 +1066,22 @@
 					</div>
 					<div class="md:col-span-2">
 						{#if formError}
-							<p class="rounded-md border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 shadow-[3px_3px_0_#0f172a]">
+							<p
+								class="rounded-md border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 shadow-[3px_3px_0_#0f172a]"
+							>
 								{formError}
 							</p>
 						{/if}
 						{#if formSuccess}
-							<p class="rounded-md border-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 shadow-[3px_3px_0_#0f172a]">
+							<p
+								class="rounded-md border-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 shadow-[3px_3px_0_#0f172a]"
+							>
 								{formSuccess}
 							</p>
 						{:else if formLoading}
-							<p class="rounded-md border-2 border-slate-300 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 shadow-[3px_3px_0_#0f172a]">
+							<p
+								class="rounded-md border-2 border-slate-300 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 shadow-[3px_3px_0_#0f172a]"
+							>
 								Sending your application...
 							</p>
 						{/if}
@@ -897,7 +1092,9 @@
 						>
 							{#if formLoading}
 								<span class="inline-flex items-center gap-2">
-									<span class="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-l-white"></span>
+									<span
+										class="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-l-white"
+									></span>
 									Sending application...
 								</span>
 							{:else}
@@ -908,13 +1105,16 @@
 				</form>
 			</div>
 		</section>
-
 	</main>
 
 	<footer class="mt-6 border-t-2 border-slate-900 bg-white">
-		<div class="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-6 sm:flex-row sm:items-center sm:justify-between">
+		<div
+			class="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-6 sm:flex-row sm:items-center sm:justify-between"
+		>
 			<div class="flex items-center gap-3">
-				<div class="flex h-10 w-10 items-center justify-center rounded-md border-2 border-slate-900 bg-white text-sm font-semibold shadow-[3px_3px_0_#0f172a]">
+				<div
+					class="flex h-10 w-10 items-center justify-center rounded-md border-2 border-slate-900 bg-white text-sm font-semibold shadow-[3px_3px_0_#0f172a]"
+				>
 					CC
 				</div>
 				<div>
@@ -945,7 +1145,9 @@
 					aria-label="X"
 				>
 					<svg viewBox="0 0 24 24" class="h-5 w-5 fill-current">
-						<path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.3l-4.927-6.437-5.64 6.437H2.423l7.73-8.828L1.902 2.25h6.083l4.45 5.845 5.81-5.845Zm-1.162 17.52h1.833L7.084 3.633H5.117l11.965 16.137Z" />
+						<path
+							d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.3l-4.927-6.437-5.64 6.437H2.423l7.73-8.828L1.902 2.25h6.083l4.45 5.845 5.81-5.845Zm-1.162 17.52h1.833L7.084 3.633H5.117l11.965 16.137Z"
+						/>
 					</svg>
 				</a>
 				<a
@@ -956,7 +1158,9 @@
 					aria-label="Instagram"
 				>
 					<svg viewBox="0 0 24 24" class="h-5 w-5 fill-current">
-						<path d="M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5Zm0 2a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H7Zm5 3.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 0 1 12 7.5Zm0 2A2.5 2.5 0 1 0 14.5 12 2.5 2.5 0 0 0 12 9.5Zm4.75-4.25a1 1 0 1 1-1 1 1 1 0 0 1 1-1Z" />
+						<path
+							d="M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5Zm0 2a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H7Zm5 3.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 0 1 12 7.5Zm0 2A2.5 2.5 0 1 0 14.5 12 2.5 2.5 0 0 0 12 9.5Zm4.75-4.25a1 1 0 1 1-1 1 1 1 0 0 1 1-1Z"
+						/>
 					</svg>
 				</a>
 			</div>
