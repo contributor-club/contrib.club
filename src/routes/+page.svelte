@@ -1,2 +1,709 @@
-<h1>Welcome to SvelteKit</h1>
-<p>Visit <a href="https://svelte.dev/docs/kit">svelte.dev/docs/kit</a> to read the documentation</p>
+<!--
+                                                                     
+                                                                     
+	▄█████  ▄▄▄  ▄▄  ▄▄ ▄▄▄▄▄▄ ▄▄▄▄  ▄▄ ▄▄▄▄    ▄█████ ▄▄    ▄▄ ▄▄ ▄▄▄▄  
+	██     ██▀██ ███▄██   ██   ██▄█▄ ██ ██▄██   ██     ██    ██ ██ ██▄██ 
+	▀█████ ▀███▀ ██ ▀██   ██   ██ ██ ██ ██▄█▀ ▄ ▀█████ ██▄▄▄ ▀███▀ ██▄█▀ 
+                                                                     
+	 Contrib.Club — designed and developed by the Contributor Club team
+
+	 
+-->
+
+<script lang="ts">
+	import { onMount } from 'svelte';
+
+	type OwnerFilter = 'all' | 'group' | 'personal';
+	type Project = {
+		title: string;
+		summary: string;
+		tags: string[];
+		isNew?: boolean;
+		ownerType: OwnerFilter;
+		owner: string;
+		status: string;
+		github: string;
+		contributors: { name: string; avatar: string }[];
+		hearts: number;
+		sparklinePath: string;
+	};
+
+	// Server-provided GitHub stats (org + repo-level)
+	let { data } = $props();
+
+	function formatNumber(value: number) {
+		if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
+		if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+		return value.toString();
+	}
+
+	const githubStats = $derived(data?.githubStats ?? { stars: 0, forks: 0, contributors: 0 });
+
+	const repoStats: Record<string, { stars: number; forks: number }> = $derived(data?.repoStats ?? {});
+	const statsReady = $derived(Boolean(data?.repoStats));
+	const orgMembersCount = $derived((data?.orgMembers ?? []).length);
+	const orgReposCount = $derived((data?.orgRepos ?? []).length);
+	const orgReposEmpty = $derived(orgReposCount === 0);
+
+	// Hero stat blocks derived from live GitHub data
+	const stats = $derived([
+		{ label: 'Stars', value: formatNumber(githubStats.stars), hint: 'Org-wide GitHub stars' },
+		{ label: 'Forks', value: formatNumber(githubStats.forks), hint: 'Org-wide forks' },
+		{ label: 'Members', value: formatNumber(githubStats.contributors), hint: 'GitHub org members' }
+	]);
+
+	// Team member profiles from org data
+	const memberProfiles = $derived(
+		(data?.orgMembers ?? []).map((member) => ({
+			name: member.login,
+			handle: member.login,
+			avatar: `${member.avatar_url}&size=120`,
+			github: member.html_url
+		}))
+	);
+
+	// Typing animation languages
+	const greetings = ['Hello', 'Bonjour', 'Hola', 'Ciao', 'Hallo', 'Hej'];
+	let greetingIndex = $state(0);
+	let typingText = $state('');
+	let charIndex = $state(0);
+	let deleting = $state(false);
+	let pauseTicks = $state(0);
+
+	// Placeholder blog entry
+	const blogPosts = [
+		{
+			title: 'Neo-brutal Marketing',
+			date: 'Dec 2025',
+			tags: ['Design', 'Frontend'],
+			excerpt: 'How we built a unique brand and site experience with neo-brutalism principles.'
+		}
+	];
+
+	let applyName = $state('');
+	let applyEmail = $state('');
+	let applyGithubUser = $state('');
+	let githubStatus = $state<{ state: 'idle' | 'loading' | 'valid' | 'invalid'; avatar?: string; name?: string }>({
+		state: 'idle'
+	});
+	let formError = $state<string | null>(null);
+	let formSuccess = $state<string | null>(null);
+	let formLoading = $state(false);
+	const orgRepos = $derived(data?.orgRepos ?? []);
+	const orgProjects = $derived(
+		orgRepos.map((repo) => ({
+			title: repo.name,
+			summary: repo.description ?? 'Open-source repository in the contributor-club org.',
+			tags: ['Org Repo'],
+			isNew: false,
+			ownerType: 'group' as const,
+			owner: 'contributor-club',
+			status: 'Live',
+			github: repo.html_url,
+			contributors: [],
+			hearts: 0,
+			sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
+		}))
+	);
+
+	// Normalizes GitHub input to a username
+	function sanitizeGithubUser(value: string): string | null {
+		const cleaned = value.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/^@/, '');
+		if (!cleaned) return null;
+		const username = cleaned.split('/')[0];
+		return username.length ? username : null;
+	}
+
+	// Validate GitHub account via public API
+	async function validateGithub() {
+		const username = sanitizeGithubUser(applyGithubUser);
+		if (!username) {
+			githubStatus = { state: 'invalid' };
+			return;
+		}
+		githubStatus = { state: 'loading' };
+		try {
+			const res = await fetch(`https://api.github.com/users/${username}`);
+			if (!res.ok) {
+				githubStatus = { state: 'invalid' };
+				return;
+			}
+			const payload = await res.json();
+			githubStatus = {
+				state: 'valid',
+				avatar: payload.avatar_url,
+				name: payload.name || payload.login
+			};
+		} catch {
+			githubStatus = { state: 'invalid' };
+		}
+	}
+
+	// Reset GitHub validation state
+	function resetGithubValidation() {
+		githubStatus = { state: 'idle' };
+	}
+
+	// Handle application submit with basic field validation and fake async
+	async function submitApplication(event: Event) {
+		event.preventDefault();
+		formError = null;
+		formSuccess = null;
+
+		if (!applyName.trim() || !applyEmail.trim() || githubStatus.state !== 'valid') {
+			formError = 'Name, email, and a valid GitHub profile are required.';
+			return;
+		}
+
+		formLoading = true;
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		formLoading = false;
+		formSuccess = 'Application received. We will review and reach out.';
+	}
+
+	type OrgRepoShape = {
+		name?: string;
+		description?: string | null;
+		html_url?: string;
+		stargazers_count?: number;
+		forks_count?: number;
+		topics?: string[];
+		language?: string | null;
+		updated_at?: string;
+	};
+
+	// Fallback repo if org fetch fails or returns empty
+	const fallbackOrgRepos: OrgRepoShape[] = [
+		{
+			name: 'Contrib.Club',
+			description: 'Visit our GitHub org to see live repositories once available.',
+			html_url: 'https://github.com/contributor-club',
+			stargazers_count: 0,
+			forks_count: 0,
+			topics: ['General'],
+			language: 'General',
+			updated_at: new Date().toISOString()
+		}
+	];
+
+	// Projects sourced from org repos; tags from topics or language
+	const allProjects = $derived(
+		(orgRepos && orgRepos.length > 0 ? orgRepos : fallbackOrgRepos).map((repo: OrgRepoShape) => ({
+			title: repo.name ?? 'Repo',
+			summary: repo.description ?? 'Repository from contributor-club.',
+			tags:
+				repo.topics && repo.topics.length > 0
+					? repo.topics
+					: [repo.language || 'General'],
+			isNew: repo.updated_at ? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45 : false,
+			ownerType: 'group' as const,
+			owner: 'contributor-club',
+			status: 'Live',
+			github: repo.html_url ?? 'https://github.com/contributor-club',
+			contributors: [],
+			hearts: 0,
+			sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
+		}))
+	);
+
+	const tagOptions = $derived(
+		Array.from(new Set(allProjects.flatMap((project) => project.tags)))
+	);
+
+	const tagPalette = [
+		'bg-rose-100 text-rose-900 border-rose-200',
+		'bg-orange-100 text-orange-900 border-orange-200',
+		'bg-amber-100 text-amber-900 border-amber-200',
+		'bg-lime-100 text-lime-900 border-lime-200',
+		'bg-emerald-100 text-emerald-900 border-emerald-200',
+		'bg-cyan-100 text-cyan-900 border-cyan-200',
+		'bg-sky-100 text-sky-900 border-sky-200',
+		'bg-indigo-100 text-indigo-900 border-indigo-200',
+		'bg-fuchsia-100 text-fuchsia-900 border-fuchsia-200'
+	];
+
+	function pastelClass(tag: string) {
+		let hash = 0;
+		for (const char of tag) {
+			hash = (hash + char.charCodeAt(0)) % tagPalette.length;
+		}
+		return tagPalette[hash];
+	}
+
+	onMount(() => {
+		const id = setInterval(() => {
+			const current = greetings[greetingIndex];
+			if (pauseTicks > 0) {
+				pauseTicks -= 1;
+				return;
+			}
+			if (!deleting) {
+				// typing forward
+				charIndex = Math.min(charIndex + 1, current.length);
+				typingText = current.slice(0, charIndex);
+				if (charIndex === current.length) {
+					deleting = true;
+					pauseTicks = 8;
+				}
+			} else {
+				// deleting
+				charIndex = Math.max(charIndex - 1, 0);
+				typingText = current.slice(0, charIndex);
+				if (charIndex === 0) {
+					deleting = false;
+					greetingIndex = (greetingIndex + 1) % greetings.length;
+					pauseTicks = 4;
+				}
+			}
+		}, 140);
+
+		return () => clearInterval(id);
+	});
+
+	let selectedTags: string[] = $state([]);
+	let ownerFilter: OwnerFilter = $state('all');
+
+	function toggleTag(tag: string) {
+		selectedTags = selectedTags.includes(tag)
+			? selectedTags.filter((value) => value !== tag)
+			: [...selectedTags, tag];
+	}
+
+	function clearTags() {
+		selectedTags = [];
+	}
+
+	function setOwner(filter: OwnerFilter) {
+		ownerFilter = filter;
+	}
+
+	type FilterTab = 'all' | 'popular' | 'new';
+	let activeFilter: FilterTab = $state('all');
+
+	let filteredProjects: Project[] = $state([]);
+
+	$effect(() => {
+		let list: Project[] = allProjects;
+
+		if (activeFilter === 'new') {
+			list = allProjects.filter((project) => project.isNew);
+		} else if (activeFilter === 'popular') {
+			list = [...allProjects].sort((a, b) => {
+				const aStars = repoStats[a.github]?.stars ?? 0;
+				const bStars = repoStats[b.github]?.stars ?? 0;
+				return bStars - aStars;
+			});
+		}
+
+		if (selectedTags.length > 0) {
+			list = list.filter((project) => selectedTags.every((tag) => project.tags.includes(tag)));
+		}
+
+		filteredProjects = list;
+	});
+
+	// Client-side logging of org data for quick diagnostics
+	onMount(() => {
+		console.log(
+			`Contrib.Club data → members: ${orgMembersCount}, repos: ${orgReposCount}, projects rendered: ${allProjects.length}`
+		);
+	});
+</script>
+
+<svelte:head>
+	<title>Contributor Club</title>
+	<meta
+		name="description"
+		content="A club for all levels of open-source developers, from beginner projects to more advanced projects that require a group effort."
+	/>
+</svelte:head>
+
+<div class="min-h-screen bg-[#f7f7f2] text-slate-900">
+	<main class="mx-auto max-w-6xl px-5 pb-20 mt-10">
+		<section class="flex min-h-[70vh] flex-col items-center gap-10 border-b-2 border-slate-900 py-16 text-center">
+
+			<div class="mt-6 flex items-center justify-center gap-4">
+				{#if memberProfiles.length === 0}
+					<div class="h-16 w-16 rounded-md border-2 border-slate-900 bg-slate-100 shadow-[4px_4px_0_#0f172a] animate-pulse"></div>
+				{:else}
+					{#each memberProfiles as person}
+						<div class="h-16 w-16 rounded-md border-2 border-slate-900 bg-white shadow-[4px_4px_0_#0f172a]">
+							<img
+								alt={person.name}
+								class="h-full w-full rounded-[4px] object-cover"
+								src={person.avatar}
+								loading="lazy"
+							/>
+						</div>
+					{/each}
+				{/if}
+			</div>
+
+			<div class="space-y-4 mt-10">
+				<h1 class="flex items-center justify-center gap-3 text-5xl font-semibold sm:text-6xl" data-test="hero-heading">
+					<span>👋</span>
+					<span class="whitespace-nowrap">{typingText}<span class="cursor">|</span></span>
+				</h1>
+				<p class="text-2xl font-semibold text-slate-900 sm:text-3xl" data-test="hero-subtitle">
+					A club for open-source contributors.
+				</p>
+				<p class="text-lg text-slate-700" data-test="hero-description">
+					A club for all levels of open-source developers, from beginner projects to more advanced projects that require a group effort.
+				</p>
+			</div>
+
+			<style>
+				.cursor {
+					animation: blink 1s step-start infinite;
+				}
+				@keyframes blink {
+					50% {
+						opacity: 0;
+					}
+				}
+			</style>
+
+		<div class="mt-10 grid w-full max-w-3xl gap-4 sm:grid-cols-3">
+			{#if statsReady}
+				{#each stats as stat}
+						<div class="rounded-lg border-2 border-slate-900 bg-white p-5 text-left shadow-[6px_6px_0_#0f172a]" data-test={`stat-${stat.label.toLowerCase()}`}>
+							<p class="text-xs font-semibold uppercase tracking-wide text-slate-600">{stat.label}</p>
+							<p class="mt-2 text-2xl font-semibold" data-test="stat-value">{stat.value}</p>
+							<p class="text-sm text-slate-600" data-test="stat-hint">{stat.hint}</p>
+						</div>
+					{/each}
+				{:else}
+					{#each Array(3) as _}
+						<div class="h-24 rounded-lg border-2 border-slate-900 bg-slate-100 shadow-[6px_6px_0_#0f172a] animate-pulse"></div>
+					{/each}
+				{/if}
+			</div>
+
+			<a
+				class="inline-flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white px-4 py-2 text-sm font-semibold shadow-[4px_4px_0_#0f172a] transition hover:-translate-y-[1px]"
+				href="#projects"
+			>
+				<span class="text-lg">↓</span> Scroll to view projects
+			</a>
+		</section>
+
+		<section id="blog" class="space-y-5 border-t-2 border-slate-900 py-10">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Our Blog</p>
+					<h2 class="text-3xl font-semibold">Notes from the team</h2>
+					<p class="text-slate-700">Releases, projects, and practices brought to you by the Contrib.Club team.</p>
+				</div>
+			</div>
+			<div class="grid gap-6 lg:grid-cols-3">
+				{#each blogPosts as post}
+					<article class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]">
+						<div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600">
+							<span>{post.date}</span>
+							<div class="flex gap-2">
+								{#each post.tags as tag}
+									<span class="rounded-full bg-slate-100 px-2 py-1 text-slate-700">{tag}</span>
+								{/each}
+							</div>
+						</div>
+						<h3 class="text-xl font-semibold">{post.title}</h3>
+						<p class="text-slate-700">{post.excerpt}</p>
+						<a
+							class="text-sm font-semibold underline decoration-2 decoration-slate-900 underline-offset-4"
+							href="/blog"
+						>
+							Read more ->
+						</a>
+					</article>
+				{/each}
+			</div>
+		</section>
+
+		<section id="projects" class="space-y-5 py-10">
+			<div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+				<div>
+					<p class="text-xs font-semibold uppercase tracking-wide text-slate-500">The Projects</p>
+					<h2 class="text-3xl font-semibold">Our Projects & Services</h2>
+					<p class="text-slate-700">
+						<b>We're not slow.</b> We build and ship open-source projects that solve <i>real problems</i> for developers. <b>Fast!</b>
+					</p>
+				</div>
+				<div class="flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white p-1 shadow-[4px_4px_0_#0f172a]">
+					{#each ['all', 'popular', 'new'] as filter}
+						<button
+							class={`rounded-full px-3 py-1 text-sm font-semibold ${
+								activeFilter === filter ? 'bg-slate-900 text-white' : 'text-slate-800'
+							}`}
+							onclick={() => (activeFilter = filter as FilterTab)}
+						>
+							{filter === 'all' ? 'All' : filter === 'popular' ? 'Popular' : 'New'}
+						</button>
+					{/each}
+				</div>
+			</div>
+
+			<div class="flex flex-wrap gap-2">
+				{#each tagOptions as tag}
+					<button
+						class={`rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold shadow-[3px_3px_0_#0f172a] transition ${
+							selectedTags.includes(tag)
+								? 'bg-slate-900 text-white'
+								: 'bg-white text-slate-800 hover:-translate-y-[1px]'
+						}`}
+						onclick={() => toggleTag(tag)}
+					>
+						{tag}
+					</button>
+				{/each}
+				<button
+					class="rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold text-slate-800 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+					onclick={clearTags}
+				>
+					Clear
+				</button>
+			</div>
+
+			<div class="grid gap-5 lg:grid-cols-2">
+				{#if orgReposEmpty}
+					{#each Array(4) as _}
+						<div class="h-44 rounded-lg border-2 border-slate-900 bg-slate-100 shadow-[6px_6px_0_#0f172a] animate-pulse"></div>
+					{/each}
+				{:else if filteredProjects.length === 0}
+					<div class="rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a]">
+						No projects match these tags yet. Try removing a filter.
+					</div>
+				{:else}
+					{#each filteredProjects as project}
+						<article class="flex flex-col gap-4 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px]" data-test="project-card">
+							<div class="flex items-center justify-between">
+								<div class="space-y-1">
+									<h3 class="text-2xl font-semibold">{project.title}</h3>
+									<p class="text-sm text-slate-700">{project.summary}</p>
+								</div>
+							</div>
+							<div class="rounded-md border-2 border-slate-900 bg-slate-50 p-3 shadow-[4px_4px_0_#0f172a]">
+								<svg class="h-14 w-full text-slate-900" viewBox="0 0 150 40" role="presentation" aria-hidden="true">
+									<path d={project.sparklinePath} stroke="currentColor" stroke-width="3" fill="none" />
+									<rect x="0" y="30" width="150" height="6" fill="#e2e8f0" />
+								</svg>
+							</div>
+							<div class="grid gap-3 text-sm text-slate-700 md:grid-cols-2">
+								<div class="flex h-full items-center justify-between rounded-md border-2 border-slate-900 bg-white px-3 py-2 shadow-[3px_3px_0_#0f172a]" data-test="project-stars">
+									<span class="text-[11px] font-semibold uppercase text-slate-600">Stars</span>
+									<span class="flex items-center gap-1 text-base font-semibold">
+										<svg viewBox="0 0 24 24" class="h-4 w-4 fill-current text-rose-500">
+											<path d="M12 21s-5.29-2.95-8.13-6.51C1.95 12.36 1 10.56 1 8.6 1 5.5 3.38 3 6.4 3 8.3 3 9.9 4 11 5.5 12.1 4 13.7 3 15.6 3 18.62 3 21 5.5 21 8.6c0 1.96-.95 3.76-2.87 5.89C17.29 18.05 12 21 12 21Z" />
+										</svg>
+										{(repoStats[project.github]?.stars ?? 0).toLocaleString()}
+									</span>
+								</div>
+								{#if project.github}
+									<a
+										class="flex h-full items-center justify-between rounded-md border-2 border-slate-900 bg-white px-3 py-2 text-xs font-semibold shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+										href={project.github}
+										target="_blank"
+										rel="noreferrer"
+									>
+										<span class="text-[11px] uppercase text-slate-600">GitHub</span>
+										<span class="flex items-center gap-2 text-sm font-semibold">
+											Repo
+											<svg viewBox="0 0 16 16" class="h-4 w-4 fill-current">
+												<path
+													fill-rule="evenodd"
+													d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8Z"
+												/>
+											</svg>
+										</span>
+									</a>
+								{:else}
+									<div class="flex h-full items-center justify-between rounded-md border-2 border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500 shadow-[3px_3px_0_#0f172a]">
+										<span class="text-[11px] uppercase">GitHub</span>
+										<span class="text-sm">Not linked</span>
+									</div>
+								{/if}
+							</div>
+							<div class="flex flex-wrap gap-2">
+								{#each project.tags.slice(0, 3) as tag}
+									<span
+										class={`rounded-sm border px-2 py-1 text-xs font-semibold ${pastelClass(tag)} shadow-[2px_2px_0_#0f172a]`}
+									>
+										{tag}
+									</span>
+								{/each}
+								{#if project.tags.length > 3}
+									<span class="rounded-sm border border-slate-300 bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-800 shadow-[2px_2px_0_#0f172a]">
+										+{project.tags.length - 3}
+									</span>
+								{/if}
+							</div>
+						</article>
+					{/each}
+				{/if}
+			</div>
+		</section>
+		<section id="apply" class="space-y-6 border-t-2 border-slate-900 py-10">
+			<div class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[8px_8px_0_#0f172a]">
+				<p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Join the team</p>
+				<h2 class="text-3xl font-semibold">Build with Contrib.Club</h2>
+				<p class="text-slate-700">
+					We look for contributors who ship regularly, care about quality, and can own an idea end-to-end. Drop your GitHub, and we’ll review your work before inviting you to the org.
+				</p>
+				<form class="mt-4 grid gap-4 md:grid-cols-2" onsubmit={submitApplication}>
+					<div class="md:col-span-1">
+						<label class="text-sm text-slate-700" for="app-name">Full name</label>
+						<input
+							id="app-name"
+							class="mt-2 w-full rounded-lg border-2 border-slate-900 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 shadow-[3px_3px_0_#0f172a] focus:border-slate-700 focus:outline-none"
+							placeholder="Your name"
+							type="text"
+							value={applyName}
+							oninput={(event) => (applyName = event.currentTarget.value)}
+						/>
+					</div>
+					<div class="md:col-span-1">
+						<label class="text-sm text-slate-700" for="app-email">Email</label>
+						<input
+							id="app-email"
+							class="mt-2 w-full rounded-lg border-2 border-slate-900 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 shadow-[3px_3px_0_#0f172a] focus:border-slate-700 focus:outline-none"
+							placeholder="you@example.com"
+							type="email"
+							value={applyEmail}
+							oninput={(event) => (applyEmail = event.currentTarget.value)}
+						/>
+					</div>
+					<div class="md:col-span-2">
+						<label class="text-sm text-slate-700" for="app-github">GitHub profile</label>
+						<div class="mt-2 flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[3px_3px_0_#0f172a] sm:flex-row sm:items-center">
+							{#if githubStatus.state === 'valid'}
+								<div class="flex w-full items-center gap-3 rounded-md border-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 shadow-[3px_3px_0_#0f172a]">
+									<span class="text-emerald-700">✓</span>
+									{#if githubStatus.avatar}
+										<img
+											alt="GitHub avatar"
+											class="h-9 w-9 rounded-md border border-emerald-300 object-cover"
+											src={githubStatus.avatar}
+										/>
+									{/if}
+									<span class="truncate">{githubStatus.name}</span>
+								</div>
+								<button
+									class="inline-flex items-center justify-center rounded-md border-2 border-slate-900 bg-white px-3 py-2 text-xs font-semibold text-slate-900 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+									type="button"
+									onclick={resetGithubValidation}
+								>
+									Remove
+								</button>
+							{:else}
+								<div class="flex w-full items-center gap-2 rounded-md border-2 border-slate-900 bg-slate-50 px-2 py-2">
+									<span class="shrink-0 text-sm font-semibold text-slate-700">github.com/</span>
+									<input
+										id="app-github"
+										class="w-full rounded-md border border-transparent bg-white px-2 py-2 text-slate-900 placeholder:text-slate-400 focus:outline-none"
+										placeholder="your-handle"
+										type="text"
+										value={applyGithubUser}
+										oninput={(event) => {
+											applyGithubUser = event.currentTarget.value;
+											if (githubStatus.state !== 'idle') githubStatus = { state: 'idle' };
+										}}
+									/>
+								</div>
+								<button
+									class="inline-flex items-center justify-center rounded-md border-2 border-slate-900 bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+									type="button"
+									onclick={validateGithub}
+								>
+									{githubStatus.state === 'loading' ? 'Checking...' : 'Validate'}
+								</button>
+							{/if}
+							{#if githubStatus.state === 'invalid'}
+								<div class="rounded-md border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 shadow-[3px_3px_0_#0f172a]">
+									Could not find that GitHub account
+								</div>
+							{/if}
+						</div>
+					</div>
+					<div class="md:col-span-2">
+						{#if formError}
+							<p class="rounded-md border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 shadow-[3px_3px_0_#0f172a]">
+								{formError}
+							</p>
+						{/if}
+						{#if formSuccess}
+							<p class="rounded-md border-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 shadow-[3px_3px_0_#0f172a]">
+								{formSuccess}
+							</p>
+						{/if}
+						<button
+							class="w-full rounded-md border-2 border-slate-900 bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-[4px_4px_0_#0f172a] transition hover:-translate-y-[2px]"
+							type="submit"
+							disabled={formLoading}
+						>
+							{#if formLoading}
+								<span class="inline-flex items-center gap-2">
+									<span class="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-l-white"></span>
+									Submitting...
+								</span>
+							{:else}
+								Submit application
+							{/if}
+						</button>
+					</div>
+				</form>
+			</div>
+		</section>
+
+	</main>
+
+	<footer class="mt-6 border-t-2 border-slate-900 bg-white">
+		<div class="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-6 sm:flex-row sm:items-center sm:justify-between">
+			<div class="flex items-center gap-3">
+				<div class="flex h-10 w-10 items-center justify-center rounded-md border-2 border-slate-900 bg-white text-sm font-semibold shadow-[3px_3px_0_#0f172a]">
+					CC
+				</div>
+				<div>
+					<p class="text-lg font-semibold">Contributors Club</p>
+					<p class="text-xs text-slate-600">A club for open-source contributors.</p>
+				</div>
+			</div>
+			<div class="flex flex-wrap items-center gap-3 text-sm font-semibold text-slate-800">
+				<a
+					class="flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+					href="https://github.com"
+					target="_blank"
+					rel="noreferrer"
+					aria-label="GitHub"
+				>
+					<svg viewBox="0 0 16 16" class="h-5 w-5 fill-current">
+						<path
+							fill-rule="evenodd"
+							d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8Z"
+						/>
+					</svg>
+				</a>
+				<a
+					class="flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+					href="https://x.com"
+					target="_blank"
+					rel="noreferrer"
+					aria-label="X"
+				>
+					<svg viewBox="0 0 24 24" class="h-5 w-5 fill-current">
+						<path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.3l-4.927-6.437-5.64 6.437H2.423l7.73-8.828L1.902 2.25h6.083l4.45 5.845 5.81-5.845Zm-1.162 17.52h1.833L7.084 3.633H5.117l11.965 16.137Z" />
+					</svg>
+				</a>
+				<a
+					class="flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+					href="https://instagram.com"
+					target="_blank"
+					rel="noreferrer"
+					aria-label="Instagram"
+				>
+					<svg viewBox="0 0 24 24" class="h-5 w-5 fill-current">
+						<path d="M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5Zm0 2a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H7Zm5 3.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 0 1 12 7.5Zm0 2A2.5 2.5 0 1 0 14.5 12 2.5 2.5 0 0 0 12 9.5Zm4.75-4.25a1 1 0 1 1-1 1 1 1 0 0 1 1-1Z" />
+					</svg>
+				</a>
+			</div>
+		</div>
+	</footer>
+</div>

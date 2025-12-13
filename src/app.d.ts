@@ -6,7 +6,12 @@ declare global {
 		// interface Locals {}
 		// interface PageData {}
 		// interface PageState {}
-		// interface Platform {}
+		interface Platform {
+			// Cloudflare Workers bindings (see https://developers.cloudflare.com/workers/configuration/environment-variables/)
+			env?: {
+				GITHUB_TOKEN?: string;
+			};
+		}
 	}
 }
 
