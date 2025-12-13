@@ -37,6 +37,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 
 	if (!githubToken) {
 		console.warn('GITHUB_TOKEN not found; GitHub API requests will be rate-limited.');
+	} else {
+		console.log('GITHUB_TOKEN detected in platform/env (length):', githubToken.length);
 	}
 
 	const org = 'contributor-club';
