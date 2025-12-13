@@ -31,6 +31,7 @@ type BlogEntry = {
 	description: string;
 	content: string;
 	author: string;
+	authorUrl?: string | null;
 	createdAt: string;
 	modifiedAt: string;
 	reactions: Record<string, number>;
@@ -147,6 +148,21 @@ function normalizeHomepage(value: string | null | undefined) {
 	}
 }
 
+function normalizeWebsite(value: string | null | undefined) {
+	if (!value || typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed.replace(/^\/+/, '')}`;
+	try {
+		const url = new URL(withProtocol);
+		if (!url.hostname) return null;
+		url.hash = '';
+		return url.toString();
+	} catch {
+		return null;
+	}
+}
+
 function slugifyTitle(title: string, fallback: string) {
 	const base = title
 		.toLowerCase()
@@ -169,6 +185,7 @@ type DbBlogRow = {
 	description?: string;
 	content?: string;
 	author?: string;
+	author_url?: string | null;
 	created_at?: string;
 	modified_at?: string;
 	reactions?: string | null;
@@ -219,10 +236,22 @@ function mapDbBlog(row: DbBlogRow): BlogEntry | null {
 		description: row.description ?? '',
 		content: row.content ?? '',
 		author: row.author ?? 'contributor-club',
+		authorUrl: row.author_url ?? null,
 		createdAt: row.created_at ?? new Date().toISOString(),
 		modifiedAt: row.modified_at ?? row.created_at ?? new Date().toISOString(),
 		reactions: reactionCounts
 	};
+}
+
+async function fetchAuthorWebsite(author: string, headers: Record<string, string>) {
+	try {
+		const res = await fetch(`https://api.github.com/users/${author}`, { headers });
+		if (!res.ok) return null;
+		const profile: { blog?: string | null } = await res.json();
+		return normalizeWebsite(profile.blog ?? null);
+	} catch {
+		return null;
+	}
 }
 
 async function hydrateHomepages(
@@ -993,6 +1022,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 							description,
 							content,
 							author: 'contributor-club',
+							authorUrl: null,
 							createdAt,
 							modifiedAt: latestDate ?? createdAt,
 							reactions: {}
@@ -1016,12 +1046,17 @@ const blogMap = new Map<string, BlogEntry>();
 		try {
 			await d1
 				.prepare(
-					'CREATE TABLE IF NOT EXISTS blogs (slug TEXT PRIMARY KEY, title TEXT, description TEXT, content TEXT, author TEXT, created_at TEXT, modified_at TEXT, reactions TEXT)'
+					'CREATE TABLE IF NOT EXISTS blogs (slug TEXT PRIMARY KEY, title TEXT, description TEXT, content TEXT, author TEXT, author_url TEXT, created_at TEXT, modified_at TEXT, reactions TEXT)'
 				)
 				.run();
+			try {
+				await d1.prepare('ALTER TABLE blogs ADD COLUMN author_url TEXT').run();
+			} catch {
+				// ignore if already exists
+			}
 			const rows = await d1
 				.prepare(
-					'SELECT slug, title, description, content, author, created_at, modified_at, reactions FROM blogs'
+					'SELECT slug, title, description, content, author, author_url, created_at, modified_at, reactions FROM blogs'
 				)
 				.all();
 			for (const row of (rows?.results as DbBlogRow[] | undefined) ?? []) {
@@ -1048,7 +1083,7 @@ const blogMap = new Map<string, BlogEntry>();
 			try {
 				await d1
 					.prepare(
-						'INSERT OR IGNORE INTO blogs (slug, title, description, content, author, created_at, modified_at, reactions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+						'INSERT OR IGNORE INTO blogs (slug, title, description, content, author, author_url, created_at, modified_at, reactions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
 					)
 					.bind(
 						finalEntry.slug,
@@ -1056,6 +1091,7 @@ const blogMap = new Map<string, BlogEntry>();
 						finalEntry.description,
 						finalEntry.content,
 						finalEntry.author,
+						finalEntry.authorUrl ?? null,
 						finalEntry.createdAt,
 						finalEntry.modifiedAt,
 						JSON.stringify({ counts: finalEntry.reactions ?? {}, ipMap: {} })
@@ -1070,6 +1106,22 @@ const blogMap = new Map<string, BlogEntry>();
 	blogPosts = Array.from(blogMap.values()).sort(
 		(a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
 	);
+	// Populate author websites from GitHub profiles (fallback to stored authorUrl if fetch fails)
+	if (blogPosts.length > 0) {
+		const uniqueAuthors = Array.from(new Set(blogPosts.map((post) => post.author).filter(Boolean)));
+		const authorWebsites = new Map<string, string | null>();
+		const headerSet = githubToken ? headers : publicHeaders;
+		await Promise.all(
+			uniqueAuthors.map(async (author) => {
+				const site = await fetchAuthorWebsite(author, headerSet);
+				if (site) authorWebsites.set(author, site);
+			})
+		);
+		blogPosts = blogPosts.map((post) => ({
+			...post,
+			authorUrl: authorWebsites.get(post.author) ?? post.authorUrl ?? null
+		}));
+	}
 
 	const payload: CachedPayload = {
 		githubStats: { stars, forks, contributors: orgMembers },

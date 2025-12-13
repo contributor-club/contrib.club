@@ -115,9 +115,14 @@ export const POST: RequestHandler = async (event) => {
 
 	await d1
 		.prepare(
-			'CREATE TABLE IF NOT EXISTS blogs (slug TEXT PRIMARY KEY, title TEXT, description TEXT, content TEXT, author TEXT, created_at TEXT, modified_at TEXT, reactions TEXT)'
+			'CREATE TABLE IF NOT EXISTS blogs (slug TEXT PRIMARY KEY, title TEXT, description TEXT, content TEXT, author TEXT, author_url TEXT, created_at TEXT, modified_at TEXT, reactions TEXT)'
 		)
 		.run();
+	try {
+		await d1.prepare('ALTER TABLE blogs ADD COLUMN author_url TEXT').run();
+	} catch {
+		// ignore if already exists
+	}
 
 	const row = (await d1
 		.prepare('SELECT reactions FROM blogs WHERE slug = ?')

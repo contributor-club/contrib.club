@@ -369,6 +369,179 @@
 		}, {} as Record<string, number>)
 	);
 
+	const languageKeywords = [
+		'javascript',
+		'js',
+		'typescript',
+		'ts',
+		'python',
+		'php',
+		'ruby',
+		'rust',
+		'go',
+		'golang',
+		'java',
+		'kotlin',
+		'swift',
+		'objective-c',
+		'objc',
+		'dart',
+		'c',
+		'c++',
+		'c#',
+		'css',
+		'html',
+		'svelte',
+		'shell'
+	];
+
+	const languageMeta = [
+		{
+			key: 'typescript',
+			label: 'TypeScript',
+			aliases: ['typescript', 'ts'],
+			iconPath: `/languages/${encodeURIComponent('typescript.png')}`
+		},
+		{
+			key: 'javascript',
+			label: 'JavaScript',
+			aliases: ['javascript', 'js'],
+			iconPath: `/languages/${encodeURIComponent('javascript.png')}`
+		},
+		{
+			key: 'python',
+			label: 'Python',
+			aliases: ['python'],
+			iconPath: `/languages/${encodeURIComponent('python.png')}`
+		},
+		{
+			key: 'php',
+			label: 'PHP',
+			aliases: ['php'],
+			iconPath: `/languages/${encodeURIComponent('php.png')}`
+		},
+		{
+			key: 'svelte',
+			label: 'Svelte',
+			aliases: ['svelte'],
+			iconPath: `/languages/${encodeURIComponent('svelte.png')}`
+		},
+		{
+			key: 'html',
+			label: 'HTML5',
+			aliases: ['html'],
+			iconPath: `/languages/${encodeURIComponent('html.png')}`
+		},
+		{
+			key: 'css',
+			label: 'CSS3',
+			aliases: ['css'],
+			iconPath: `/languages/${encodeURIComponent('css.png')}`
+		},
+		{
+			key: 'shell',
+			label: 'Shell',
+			aliases: ['shell', 'bash', 'sh'],
+			iconPath: `/languages/${encodeURIComponent('shell.png')}`
+		},
+		{
+			key: 'ruby',
+			label: 'Ruby',
+			aliases: ['ruby'],
+			iconPath: `/languages/${encodeURIComponent('ruby.png')}`
+		},
+		{
+			key: 'rust',
+			label: 'Rust',
+			aliases: ['rust'],
+			iconPath: `/languages/${encodeURIComponent('rust.png')}`
+		},
+		{
+			key: 'go',
+			label: 'Go',
+			aliases: ['go', 'golang'],
+			iconPath: `/languages/${encodeURIComponent('go.png')}`
+		},
+		{
+			key: 'java',
+			label: 'Java',
+			aliases: ['java'],
+			iconPath: `/languages/${encodeURIComponent('java.png')}`
+		},
+		{
+			key: 'kotlin',
+			label: 'Kotlin',
+			aliases: ['kotlin'],
+			iconPath: `/languages/${encodeURIComponent('kotlin.png')}`
+		},
+		{
+			key: 'swift',
+			label: 'Swift',
+			aliases: ['swift'],
+			iconPath: `/languages/${encodeURIComponent('swift.png')}`
+		},
+		{
+			key: 'objc',
+			label: 'Objective-C',
+			aliases: ['objective-c', 'objc'],
+			iconPath: `/languages/${encodeURIComponent('objc.png')}`
+		},
+		{
+			key: 'dart',
+			label: 'Dart',
+			aliases: ['dart'],
+			iconPath: `/languages/${encodeURIComponent('dart.png')}`
+		},
+		{
+			key: 'c',
+			label: 'C',
+			aliases: ['c'],
+			iconPath: `/languages/${encodeURIComponent('c.png')}`
+		},
+		{
+			key: 'c++',
+			label: 'C++',
+			aliases: ['c++'],
+			iconPath: `/languages/${encodeURIComponent('c++.png')}`
+		},
+		{
+			key: 'c#',
+			label: 'C#',
+			aliases: ['c#'],
+			iconPath: `/languages/${encodeURIComponent('c#.png')}`
+		}
+	];
+
+	const languageAliasLookup = $derived.by<Map<string, string>>(() => {
+		const map = new Map<string, string>();
+		for (const meta of languageMeta) {
+			map.set(meta.key, meta.key);
+			for (const alias of meta.aliases) {
+				map.set(alias.toLowerCase(), meta.key);
+			}
+		}
+		return map;
+	});
+
+	function normalizeLanguageTag(tag: string) {
+		const lower = tag.trim().toLowerCase();
+		return languageAliasLookup.get(lower) ?? null;
+	}
+
+	function isLanguageTag(tag: string) {
+		return Boolean(normalizeLanguageTag(tag));
+	}
+
+	function tagDisplay(tag: string) {
+		const key = normalizeLanguageTag(tag) ?? tag.trim().toLowerCase();
+		const meta = languageMeta.find((item) => item.key === key);
+		if (meta) {
+			return { label: meta.label, iconPath: meta.iconPath ?? null };
+		}
+		const pretty = tag.charAt(0).toUpperCase() + tag.slice(1);
+		return { label: pretty, icon: null };
+	}
+
 	const tagOptions = $derived(
 		Object.keys(tagCountsNormalized).sort((a, b) => {
 			const diff = (tagCountsNormalized[b] ?? 0) - (tagCountsNormalized[a] ?? 0);
@@ -377,10 +550,54 @@
 		})
 	);
 
+	const languageTags = $derived(
+		Array.from(
+			new Set(
+				tagOptions
+					.map((tag) => normalizeLanguageTag(tag))
+					.filter((value): value is string => Boolean(value))
+			)
+		)
+	);
+	const otherTags = $derived(tagOptions.filter((tag) => !isLanguageTag(tag)));
+
+	const languageIcons: Record<string, string> = {
+		typescript: '🟦',
+		ts: '🟦',
+		javascript: '🟨',
+		js: '🟨',
+		python: '🐍',
+		php: '🐘',
+		ruby: '💎',
+		rust: '🦀',
+		go: '💧',
+		golang: '💧',
+		java: '☕',
+		kotlin: '🎨',
+		swift: '🦅',
+		'objective-c': '🍏',
+		objc: '🍏',
+		dart: '🎯',
+		c: '🧊',
+		'c++': '➕',
+		'c#': '🎹',
+		css: '🎨',
+		html: '📄',
+		svelte: '🔥',
+		shell: '💻'
+	};
+
+	function displayTag(tag: string) {
+		const lower = tag.toLowerCase();
+		const icon = languageIcons[lower] ?? '';
+		const pretty = tag.charAt(0).toUpperCase() + tag.slice(1);
+		return `${icon ? `${icon} ` : ''}${pretty}`;
+	}
+
 	const MAX_VISIBLE_TAGS = 10;
-	const visibleTags = $derived(tagOptions.slice(0, MAX_VISIBLE_TAGS));
-	const overflowTags = $derived(tagOptions.slice(MAX_VISIBLE_TAGS));
-	const overflowHasTags = $derived(overflowTags.length > 0);
+	const visibleTags = $derived(languageTags.slice(0, MAX_VISIBLE_TAGS));
+	const overflowTags = $derived(languageTags.slice(MAX_VISIBLE_TAGS));
+	const overflowHasTags = $derived(otherTags.length > 0);
 
 	const tagPalette = [
 		'bg-rose-100 text-rose-900 border-rose-200',
@@ -917,7 +1134,14 @@
 						}`}
 						onclick={() => toggleTag(tag)}
 					>
-						{tag} ({tagCountsNormalized[tag] ?? 0})
+						{#if tagDisplay(tag)?.iconPath}
+							<img
+								alt={tagDisplay(tag)?.label}
+								class="mr-1 inline-block h-4 w-4 align-middle"
+								src={tagDisplay(tag)?.iconPath}
+							/>
+						{/if}
+						<span class="align-middle">{tagDisplay(tag)?.label}</span>
 					</button>
 				{/each}
 				{#if overflowHasTags}
@@ -937,7 +1161,7 @@
 						</button>
 						{#if moreTagsOpen}
 							<div
-								class="absolute z-20 mt-2 w-72 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[6px_6px_0_#0f172a]"
+								class="absolute z-20 mt-2 w-80 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[6px_6px_0_#0f172a]"
 								role="listbox"
 							>
 								<div class="flex items-center gap-2 rounded-md border border-slate-200 px-2 py-1">
@@ -956,22 +1180,48 @@
 									/>
 								</div>
 								<div class="mt-2 max-h-60 space-y-1 overflow-y-auto">
-									{#each overflowTags.filter((tag) =>
+									{#each otherTags.filter((tag) =>
 										tag.toLowerCase().includes(tagSearchTerm.trim().toLowerCase())
 									) as tag}
-										<button
-											class={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm font-semibold transition ${
-												selectedTags.includes(tag)
-													? 'bg-slate-900 text-white'
-													: 'hover:bg-slate-100 text-slate-800'
-											}`}
-											onclick={() => toggleTag(tag)}
-										>
-											<span>{tag}</span>
-											<span class="text-xs text-slate-600">
+										<label
+											class={`flex w-full items-center justify-between rounded-md border-2 border-slate-900 px-3 py-2 text-left text-sm font-semibold shadow-[3px_3px_0_#0f172a] transition ${
+									selectedTags.includes(tag)
+										? 'bg-slate-900 text-white'
+										: 'bg-white text-slate-800 hover:-translate-y-[1px]'
+								}`}
+							>
+											<div class="flex items-center gap-2">
+												<span
+												class={`inline-flex h-4 w-4 items-center justify-center rounded-sm border-2 border-slate-900 text-xs font-bold ${
+													selectedTags.includes(tag) ? 'bg-white text-slate-900' : 'bg-slate-100 text-slate-900'
+												}`}
+											>
+												{selectedTags.includes(tag) ? '✓' : ''}
+											</span>
+											<div class="flex items-center gap-1">
+												{#if tagDisplay(tag)?.iconPath}
+													<img
+														alt={tagDisplay(tag)?.label}
+														class="inline-block h-4 w-4 align-middle"
+														src={tagDisplay(tag)?.iconPath}
+													/>
+												{/if}
+												<span class="align-middle">{tagDisplay(tag)?.label}</span>
+											</div>
+											<span class={`text-xs font-semibold ${selectedTags.includes(tag) ? 'text-white' : 'text-slate-600'}`}>
 												{tagCountsNormalized[tag] ?? 0}
 											</span>
-										</button>
+											</div>
+											<input
+												type="checkbox"
+												class="hidden"
+												checked={selectedTags.includes(tag)}
+												onchange={() => toggleTag(tag)}
+											/>
+											<span class={`text-sm ${selectedTags.includes(tag) ? 'text-white' : 'text-slate-600'}`}>
+												{displayTag(tag)}
+											</span>
+										</label>
 									{:else}
 										<div class="rounded-md bg-slate-50 px-2 py-2 text-xs font-semibold text-slate-500">
 											No tags match.
