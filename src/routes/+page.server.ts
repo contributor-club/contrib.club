@@ -31,7 +31,8 @@ type Env = {
 export const load: PageServerLoad = async ({ fetch, platform }) => {
 	// Cloudflare Worker secret is exposed via platform.env; fall back to process/import.meta for local dev
 	const cfEnv = (platform?.env as Env | undefined) ?? undefined;
-	const githubToken = cfEnv?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? (import.meta as any)?.env?.GITHUB_TOKEN;
+	const githubToken =
+		cfEnv?.GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? (import.meta as any)?.env?.GITHUB_TOKEN;
 	const acceptTopics = 'application/vnd.github+json, application/vnd.github.mercy-preview+json';
 	const headers: Record<string, string> = {
 		accept: acceptTopics,
@@ -43,7 +44,10 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		console.warn('GITHUB_TOKEN not found; GitHub API requests will be rate-limited.');
 	} else {
 		const keys = cfEnv ? Object.keys(cfEnv) : [];
-		console.log('GITHUB_TOKEN detected (length):', githubToken.length, 'platform.env keys:', keys);
+		let source = 'platform.env';
+		if (!cfEnv?.GITHUB_TOKEN && process.env.GITHUB_TOKEN) source = 'process.env';
+		if (!cfEnv?.GITHUB_TOKEN && (import.meta as any)?.env?.GITHUB_TOKEN) source = 'import.meta.env';
+		console.log('GITHUB_TOKEN detected (length):', githubToken.length, 'source:', source, 'platform.env keys:', keys);
 	}
 
 	const org = 'contributor-club';
