@@ -180,9 +180,32 @@
 		}
 
 		formLoading = true;
-		await new Promise((resolve) => setTimeout(resolve, 800));
-		formLoading = false;
-		formSuccess = 'Application received. We will review and reach out.';
+		formSuccess = null;
+		try {
+			const res = await fetch('/api/contact', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					name: applyName,
+					email: applyEmail,
+					github: `https://github.com/${sanitizeGithubUser(applyGithubUser)}`
+				})
+			});
+			const data = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				formError = data.error || 'Could not submit application.';
+			} else {
+				formSuccess = 'Application received. We will review and reach out.';
+				applyName = '';
+				applyEmail = '';
+				applyGithubUser = '';
+				githubStatus = { state: 'idle' };
+			}
+		} catch (error) {
+			formError = 'Could not submit application.';
+		} finally {
+			formLoading = false;
+		}
 	}
 
 	type OrgRepoShape = {
@@ -839,6 +862,10 @@
 							<p class="rounded-md border-2 border-emerald-500 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 shadow-[3px_3px_0_#0f172a]">
 								{formSuccess}
 							</p>
+						{:else if formLoading}
+							<p class="rounded-md border-2 border-slate-300 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 shadow-[3px_3px_0_#0f172a]">
+								Sending your application...
+							</p>
 						{/if}
 						<button
 							class="w-full rounded-md border-2 border-slate-900 bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-[4px_4px_0_#0f172a] transition hover:-translate-y-[2px]"
@@ -848,7 +875,7 @@
 							{#if formLoading}
 								<span class="inline-flex items-center gap-2">
 									<span class="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-l-white"></span>
-									Submitting...
+									Sending application...
 								</span>
 							{:else}
 								Submit application
