@@ -46,6 +46,7 @@
 	const orgMembersCount = $derived((data?.orgMembers ?? []).length);
 	const orgReposCount = $derived((data?.orgRepos ?? []).length);
 	const memberRepos = $derived(data?.memberRepos ?? []);
+	const memberDetails = $derived(data?.memberDetails ?? []);
 
 	// Hero stat blocks derived from live GitHub data
 	const stats = $derived([
@@ -56,11 +57,15 @@
 
 	// Team member profiles from org data
 	const memberProfiles = $derived(
-		(data?.orgMembers ?? []).map((member) => ({
-			name: member.login,
+		(memberDetails.length > 0 ? memberDetails : (data?.orgMembers ?? [])).map((member) => ({
+			name: 'name' in member ? (member as any).name ?? member.login : member.login,
 			handle: member.login,
 			avatar: `${member.avatar_url}&size=120`,
-			github: member.html_url
+			github: member.html_url,
+			public_repos: (member as any).public_repos,
+			public_gists: (member as any).public_gists,
+			followers: (member as any).followers,
+			star_count: (member as any).star_count
 		}))
 	);
 
@@ -72,7 +77,7 @@
 	let deleting = $state(false);
 	let pauseTicks = $state(0);
 
-	type BlogPost = { title: string; date?: string; excerpt: string; url: string; tags?: string[] };
+	type BlogPost = { title: string; date?: string; excerpt: string; url: string; tags?: string[]; content?: string };
 
 	let applyName = $state('');
 	let applyEmail = $state('');
@@ -94,6 +99,8 @@
 			owner: 'contributor-club',
 			status: 'Live',
 			github: repo.html_url,
+			updated_at: repo.updated_at,
+			created_at: repo.created_at,
 			contributors: [],
 			hearts: 0,
 			sparklinePath: 'M2 28 Q 20 22 38 24 T 74 18 T 110 26 T 146 12'
@@ -115,6 +122,7 @@
 			title: post.title,
 			date: post.date ?? 'Recent',
 			excerpt: summaryWithEllipsis(post.excerpt),
+			content: post.content ?? '',
 			url: post.url,
 			tags: post.tags ?? []
 		}))
@@ -186,22 +194,10 @@
 		topics?: string[];
 		language?: string | null;
 		updated_at?: string;
+		created_at?: string;
 	};
 
 	// Fallback repo if org fetch fails or returns empty
-	const fallbackOrgRepos: OrgRepoShape[] = [
-		{
-			name: 'Contrib.Club',
-			description: 'Visit our GitHub org to see live repositories once available.',
-			html_url: 'https://github.com/contributor-club',
-			stargazers_count: 0,
-			forks_count: 0,
-			topics: ['General'],
-			language: 'General',
-			updated_at: new Date().toISOString()
-		}
-	];
-
 	const hiddenTopics = ['contrib-club', 'contrib.club'];
 
 	function summaryWithEllipsis(text: string | null | undefined) {
@@ -215,7 +211,7 @@
 
 	// Projects sourced from org repos; tags from topics or language, ignoring sentinel topic
 	const allProjects = $derived(
-		[...(orgRepos ?? []), ...(memberRepos ?? []), ...(orgRepos && orgRepos.length ? [] : fallbackOrgRepos)]
+		[...(orgRepos ?? []), ...(memberRepos ?? [])]
 			.filter((repo) => {
 				const topics = repo.topics ?? [];
 				return !topics.includes('no.contrib.club') && !topics.includes('no-contrib-club');
@@ -227,6 +223,8 @@
 					const topicTags = (repo.topics ?? []).filter((tag) => !hiddenTopics.includes(tag));
 					return topicTags.length > 0 ? topicTags : [repo.language || 'General'];
 				})(),
+				created_at: repo.created_at,
+				updated_at: repo.updated_at,
 				isNew: repo.updated_at
 					? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45
 					: false,
@@ -289,12 +287,8 @@
 			});
 		}
 
-		// Fallback deterministic pattern when activity isn't available yet
-		let hash = 0;
-		for (const char of seed) {
-			hash = (hash * 31 + char.charCodeAt(0)) % 101;
-		}
-		return Array.from({ length: DAYS_IN_WINDOW }, (_, idx) => ((hash + idx * 17) % 100) % 4);
+		// Fallback to empty/neutral contributions when activity isn't available yet
+		return Array.from({ length: DAYS_IN_WINDOW }, () => 0);
 	}
 
 	onMount(() => {
@@ -329,6 +323,8 @@
 
 	let selectedTags: string[] = $state([]);
 	let ownerFilter: OwnerFilter = $state('all');
+	let searchTerm = $state('');
+	let visibleCount = $state(6);
 
 	function toggleTag(tag: string) {
 		selectedTags = selectedTags.includes(tag)
@@ -348,17 +344,38 @@
 	let activeFilter: FilterTab = $state('all');
 
 	let filteredProjects: Project[] = $state([]);
+	const filteredWithSearch = $derived(
+		filteredProjects.filter((project) => {
+			if (!searchTerm.trim()) return true;
+			const term = searchTerm.toLowerCase();
+			return (
+				project.title.toLowerCase().includes(term) ||
+				project.summary.toLowerCase().includes(term)
+			);
+		})
+	);
+	const visibleProjects = $derived(filteredWithSearch.slice(0, visibleCount));
+	const showSearch = $derived(filteredProjects.length > 6 || allProjects.length > 6);
 
 	$effect(() => {
 		let list: Project[] = allProjects;
 
 		if (activeFilter === 'new') {
-			list = allProjects.filter((project) => project.isNew);
+			list = [...allProjects].sort((a, b) => {
+				const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
+				const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
+				return bCreated - aCreated;
+			});
 		} else if (activeFilter === 'popular') {
 			list = [...allProjects].sort((a, b) => {
-				const aStars = repoStats[a.github]?.stars ?? 0;
-				const bStars = repoStats[b.github]?.stars ?? 0;
-				return bStars - aStars;
+				const aActivity = repoStats[a.github]?.activity ?? [];
+				const bActivity = repoStats[b.github]?.activity ?? [];
+				const aRecent = aActivity.slice(-DAYS_IN_WINDOW).reduce((sum, value) => sum + value, 0);
+				const bRecent = bActivity.slice(-DAYS_IN_WINDOW).reduce((sum, value) => sum + value, 0);
+				if (bRecent !== aRecent) return bRecent - aRecent;
+				const aUpdated = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+				const bUpdated = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+				return bUpdated - aUpdated;
 			});
 		}
 
@@ -367,6 +384,13 @@
 		}
 
 		filteredProjects = list;
+	});
+
+	$effect(() => {
+		// reset pagination when filters or search change
+		filteredProjects;
+		searchTerm;
+		visibleCount = 6;
 	});
 
 	// Client-side logging of org data for quick diagnostics
@@ -411,13 +435,29 @@
 					<div class="h-16 w-16 rounded-md border-2 border-slate-900 bg-slate-100 shadow-[4px_4px_0_#0f172a] animate-pulse"></div>
 				{:else}
 					{#each memberProfiles as person}
-						<div class="h-16 w-16 rounded-md border-2 border-slate-900 bg-white shadow-[4px_4px_0_#0f172a]">
-							<img
-								alt={person.name}
-								class="h-full w-full rounded-[4px] object-cover"
-								src={person.avatar}
-								loading="lazy"
-							/>
+						<div class="relative tooltip">
+							<div
+								class="h-16 w-16 rounded-md border-2 border-slate-900 bg-white shadow-[4px_4px_0_#0f172a]"
+							>
+								<img
+									alt={person.name}
+									class="h-full w-full rounded-[4px] object-cover"
+									src={person.avatar}
+									loading="lazy"
+								/>
+							</div>
+							<div class="tooltip-bubble absolute left-1/2 top-full z-10 mt-2 w-56 -translate-x-1/2 rounded-md border-2 border-slate-900 bg-white p-3 text-left text-sm font-semibold text-slate-800 shadow-[5px_5px_0_#0f172a]">
+								<div class="flex items-center justify-between">
+									<span>{person.name}</span>
+									<span class="text-xs text-slate-500">@{person.handle}</span>
+								</div>
+								<div class="mt-2 grid grid-cols-2 gap-1 text-xs">
+									<span>⭐ {person.star_count ?? 0} stars</span>
+									<span>📦 {person.public_repos ?? 0} repos</span>
+									<span>👥 {person.followers ?? 0} followers</span>
+									<span>✏️ {person.public_gists ?? 0} gists</span>
+								</div>
+							</div>
 						</div>
 					{/each}
 				{/if}
@@ -439,6 +479,16 @@
 			<style>
 				.cursor {
 					animation: blink 1s step-start infinite;
+				}
+				.tooltip .tooltip-bubble {
+					opacity: 0;
+					transform: translateY(4px);
+					transition: opacity 120ms ease, transform 120ms ease;
+				}
+				.tooltip:hover .tooltip-bubble,
+				.tooltip:focus-within .tooltip-bubble {
+					opacity: 1;
+					transform: translateY(0);
 				}
 				@keyframes blink {
 					50% {
@@ -501,7 +551,9 @@
 							</div>
 						</div>
 						<h3 class="text-xl font-semibold">{post.title}</h3>
-						<p class="text-slate-700">{post.excerpt}</p>
+						<p class="text-slate-700 whitespace-pre-line">
+							{post.content ? summaryWithEllipsis(post.content) : post.excerpt}
+						</p>
 						{#if post.url}
 							<a
 								class="text-sm font-semibold underline decoration-2 decoration-slate-900 underline-offset-4"
@@ -531,12 +583,17 @@
 				<div class="flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white p-1 shadow-[4px_4px_0_#0f172a]">
 					{#each ['all', 'popular', 'new'] as filter}
 						<button
-							class={`rounded-full px-3 py-1 text-sm font-semibold ${
+							class={`relative tooltip rounded-full px-3 py-1 text-sm font-semibold ${
 								activeFilter === filter ? 'bg-slate-900 text-white' : 'text-slate-800'
 							}`}
 							onclick={() => (activeFilter = filter as FilterTab)}
 						>
 							{filter === 'all' ? 'All' : filter === 'popular' ? 'Popular' : 'New'}
+							{#if filter !== 'all'}
+								<span class="tooltip-bubble absolute left-1/2 top-full z-10 mt-2 min-w-[160px] -translate-x-1/2 rounded-md border-2 border-slate-900 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-[4px_4px_0_#0f172a]">
+									{filter === 'popular' ? 'Most changes made (last 60 days)' : 'Most recently created'}
+								</span>
+							{/if}
 						</button>
 					{/each}
 				</div>
@@ -548,13 +605,13 @@
 						class={`rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold shadow-[3px_3px_0_#0f172a] transition ${
 							selectedTags.includes(tag)
 								? 'bg-slate-900 text-white'
-								: 'bg-white text-slate-800 hover:-translate-y-[1px]'
-						}`}
-						onclick={() => toggleTag(tag)}
-					>
-						{tag}
-					</button>
-				{/each}
+							: 'bg-white text-slate-800 hover:-translate-y-[1px]'
+					}`}
+					onclick={() => toggleTag(tag)}
+				>
+					{tag}
+				</button>
+			{/each}
 				<button
 					class="rounded-full border-2 border-slate-900 px-3 py-1 text-sm font-semibold text-slate-800 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
 					onclick={clearTags}
@@ -563,17 +620,39 @@
 				</button>
 			</div>
 
+			{#if showSearch}
+				<div class="mt-3">
+					<label class="sr-only" for="project-search">Search projects</label>
+					<div class="flex items-center gap-2 rounded-lg border-2 border-slate-900 bg-white p-3 shadow-[4px_4px_0_#0f172a]">
+						<svg viewBox="0 0 24 24" class="h-5 w-5 text-slate-700">
+							<path
+								fill="currentColor"
+								d="M15.5 14h-.79l-.28-.27a6.471 6.471 0 0 0 1.57-4.23A6.5 6.5 0 1 0 9.5 16a6.471 6.471 0 0 0 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5Zm-6 0C8.01 14 6 11.99 6 9.5S8.01 5 10.5 5 15 7.01 15 9.5 12.99 14 10.5 14Z"
+							/>
+						</svg>
+						<input
+							id="project-search"
+							class="w-full bg-transparent text-sm font-semibold text-slate-900 placeholder:text-slate-500 focus:outline-none"
+							placeholder="Search projects"
+							type="text"
+							value={searchTerm}
+							oninput={(event) => (searchTerm = event.currentTarget.value)}
+						/>
+					</div>
+				</div>
+			{/if}
+
 			<div class="grid gap-5 lg:grid-cols-2">
 				{#if !hasProjects}
 					{#each Array(4) as _}
 						<div class="h-44 rounded-lg border-2 border-slate-900 bg-slate-100 shadow-[6px_6px_0_#0f172a] animate-pulse"></div>
 					{/each}
-				{:else if filteredProjects.length === 0}
+				{:else if filteredWithSearch.length === 0}
 					<div class="rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a]">
 						No projects match these tags yet. Try removing a filter.
 					</div>
 				{:else}
-					{#each filteredProjects as project}
+					{#each visibleProjects as project}
 						<article class="flex flex-col gap-4 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px]" data-test="project-card">
 							<div class="flex items-center justify-between">
 								<div class="space-y-1">
@@ -656,6 +735,17 @@
 					{/each}
 				{/if}
 			</div>
+			{#if filteredWithSearch.length > visibleCount}
+				<div class="mt-4 flex justify-center">
+					<button
+						class="rounded-md border-2 border-slate-900 bg-white px-4 py-2 text-sm font-semibold shadow-[4px_4px_0_#0f172a] transition hover:-translate-y-[1px]"
+						type="button"
+						onclick={() => (visibleCount += 6)}
+					>
+						Load more
+					</button>
+				</div>
+			{/if}
 		</section>
 		<section id="apply" class="space-y-6 border-t-2 border-slate-900 py-10">
 			<div class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[8px_8px_0_#0f172a]">

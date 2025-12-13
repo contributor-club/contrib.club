@@ -8,6 +8,18 @@ type OrgRepo = {
 	topics?: string[];
 	language?: string | null;
 	updated_at?: string;
+	created_at?: string;
+};
+
+type MemberDetail = {
+	login: string;
+	avatar_url: string;
+	html_url: string;
+	public_repos?: number;
+	public_gists?: number;
+	followers?: number;
+	star_count?: number;
+	name?: string | null;
 };
 
 type RepoActivity = { days?: number[] };
@@ -63,9 +75,10 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	const repoStats: Record<string, { stars: number; forks: number; activity?: number[] }> = {};
 	let orgMembers = 0;
 	let orgMembersList: { login: string; avatar_url: string; html_url: string }[] = [];
+	let memberDetails: MemberDetail[] = [];
 	let orgRepos: OrgRepo[] = [];
 	let memberRepos: OrgRepo[] = [];
-	let blogPosts: { title: string; excerpt: string; date?: string; url: string }[] = [];
+	let blogPosts: { title: string; excerpt: string; date?: string; url: string; content?: string }[] = [];
 
 	try {
 		const membersRes = await fetch(`https://api.github.com/orgs/${org}/members?per_page=100`, { headers });
@@ -78,6 +91,55 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		}
 	} catch (error) {
 		console.error('Failed to load org members', error);
+	}
+
+	// Enrich member profiles with additional stats (public repos, followers, stars sum)
+	if (orgMembersList.length > 0) {
+		try {
+			memberDetails = await Promise.all(
+				orgMembersList.map(async (member) => {
+					let profile: Partial<MemberDetail> = {};
+					try {
+						const userRes = await fetch(`https://api.github.com/users/${member.login}`, { headers });
+						if (userRes.ok) {
+							const userData = await userRes.json();
+							profile = {
+								public_repos: userData.public_repos,
+								public_gists: userData.public_gists,
+								followers: userData.followers,
+								name: userData.name
+							};
+						}
+					} catch (error) {
+						console.error('Failed to load user profile for', member.login, error);
+					}
+
+					let starSum = 0;
+					try {
+						const reposRes = await fetch(
+							`https://api.github.com/users/${member.login}/repos?per_page=100&type=public&sort=updated`,
+							{ headers }
+						);
+						if (reposRes.ok) {
+							const repos: { stargazers_count?: number }[] = await reposRes.json();
+							starSum = repos.reduce((sum, repo) => sum + (repo.stargazers_count ?? 0), 0);
+						}
+					} catch (error) {
+						console.error('Failed to load repo stars for', member.login, error);
+					}
+
+					return {
+						login: member.login,
+						avatar_url: member.avatar_url,
+						html_url: member.html_url,
+						star_count: starSum,
+						...profile
+					};
+				})
+			);
+		} catch (error) {
+			console.error('Failed to enrich member details', error);
+		}
 	}
 
 	// Fallback to public members if private members are hidden or token missing
@@ -125,7 +187,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 					forks_count: repo.forks_count ?? 0,
 					topics: repo.topics ?? [],
 					language: repo.language,
-					updated_at: repo.updated_at
+					updated_at: repo.updated_at,
+					created_at: (repo as any).created_at
 				}));
 
 				for (const repo of orgRepos) {
@@ -160,16 +223,16 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 						const res = await fetch(url, { headers });
 						if (!res.ok) continue;
 						const json = await res.json();
-						const repos: OrgRepo[] = json.items ?? [];
-						results.push(...repos);
-					} catch (error) {
-						console.error('Failed to load member repos for', member.login, error);
-					}
-				}
+				const repos: OrgRepo[] = json.items ?? [];
+				results.push(...repos);
+			} catch (error) {
+				console.error('Failed to load member repos for', member.login, error);
+			}
+		}
 
-				const deduped = Array.from(new Map(results.map((repo) => [repo.html_url, repo])).values());
-				return deduped;
-			});
+		const deduped = Array.from(new Map(results.map((repo) => [repo.html_url, repo])).values());
+		return deduped;
+	});
 
 			const memberRepoResults = await Promise.all(memberRepoRequests);
 			memberRepos = Array.from(
@@ -294,7 +357,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 					const slug = file.name.replace(/\.md$/, '');
 					const url = `https://github.com/${wikiOwner}/contrib.club/wiki/${encodeURIComponent(slug)}`;
 
-					return { title, excerpt, date: latestDate, url };
+					return { title, excerpt, date: latestDate, url, content };
 				})
 			);
 
@@ -316,6 +379,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		orgRepos,
 		memberRepos,
 		orgMembers: orgMembersList,
+		memberDetails,
 		blogPosts
 	};
 };
