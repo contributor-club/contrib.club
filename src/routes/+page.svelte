@@ -948,6 +948,7 @@
 				.contrib-viewport {
 					width: 100%;
 					max-width: 100%;
+					min-width: 0;
 					margin-inline: auto;
 					overflow-x: auto;
 					overflow-y: hidden;
@@ -1264,7 +1265,7 @@
 				</div>
 			{/if}
 
-			<div class="grid gap-5 lg:grid-cols-2">
+			<div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
 				{#if !hasProjects}
 					{#each Array(4) as _}
 						<div
@@ -1278,7 +1279,7 @@
 				{:else}
 					{#each visibleProjects as project}
 						<article
-							class="flex flex-col gap-4 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px]"
+							class="flex min-w-0 flex-col gap-4 rounded-lg border-2 border-slate-900 bg-white p-6 shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px]"
 							data-test="project-card"
 						>
 							<div class="flex items-center justify-between">
@@ -1298,12 +1299,12 @@
 										class="contrib-viewport"
 									>
 										<div
-											class="contrib-grid grid min-h-[56px] auto-cols-[16px] grid-flow-col grid-rows-3 gap-1 px-1 sm:px-0"
+											class="contrib-grid grid min-h-[48px] auto-cols-[12px] grid-flow-col grid-rows-3 gap-0.5 px-1 sm:min-h-[56px] sm:auto-cols-[16px] sm:gap-1 sm:px-0"
 										>
 											{#each contributionBlocks(project.title, repoStats[project.github]?.activity) as intensity}
 												<div
 													aria-label="Contribution block"
-													class={`h-4 w-4 rounded-sm border border-slate-200 ${
+													class={`h-3 w-3 rounded-sm border border-slate-200 sm:h-4 sm:w-4 ${
 														intensity === 0
 															? 'bg-slate-200'
 															: intensity === 1
