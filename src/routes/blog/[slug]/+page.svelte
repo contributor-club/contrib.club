@@ -1,3 +1,14 @@
+<!--
+                                                                     
+                                                                     
+	▄█████  ▄▄▄  ▄▄  ▄▄ ▄▄▄▄▄▄ ▄▄▄▄  ▄▄ ▄▄▄▄    ▄█████ ▄▄    ▄▄ ▄▄ ▄▄▄▄  
+	██     ██▀██ ███▄██   ██   ██▄█▄ ██ ██▄██   ██     ██    ██ ██ ██▄██ 
+	▀█████ ▀███▀ ██ ▀██   ██   ██ ██ ██ ██▄█▀ ▄ ▀█████ ██▄▄▄ ▀███▀ ██▄█▀ 
+                                                                     
+	 Contrib.Club — designed and developed by the Contributor Club team
+
+	 
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { marked } from 'marked';
@@ -69,6 +80,8 @@
 	let reactionError: string | null = $state(null);
 	let reactionSubmitting = $state(false);
 	let rateLimited = $state(false);
+	let isNavigating = $state(false);
+	const backHref = 'https://contrib.club/';
 
 	const markdownHtml = $derived.by(() => {
 		const raw = blog.content || '';
@@ -97,6 +110,31 @@
 
 	onMount(() => {
 		void hydrateUserReaction();
+
+		const handleNavigate = (event: MouseEvent) => {
+			const target = event.target as HTMLElement | null;
+			const anchor = target?.closest?.('a');
+			if (!anchor) return;
+			if (anchor.hasAttribute('data-no-loader')) return;
+			const href = anchor.getAttribute('href');
+			if (!href || href.startsWith('#')) return;
+			isNavigating = true;
+			if (anchor.target === '_blank') {
+				setTimeout(() => (isNavigating = false), 1500);
+			}
+		};
+
+		const handlePopState = () => {
+			isNavigating = true;
+		};
+
+		window.addEventListener('click', handleNavigate, { capture: true });
+		window.addEventListener('popstate', handlePopState);
+
+		return () => {
+			window.removeEventListener('click', handleNavigate, { capture: true });
+			window.removeEventListener('popstate', handlePopState);
+		};
 	});
 
 	$effect(() => {
@@ -128,6 +166,14 @@
 		const url = `${window.location.origin}${window.location.pathname}#${anchor}`;
 		window.location.hash = anchor;
 		navigator.clipboard?.writeText(url).catch(() => {});
+	}
+
+	function handleBackClick(event: MouseEvent) {
+		event.preventDefault();
+		isNavigating = true;
+		setTimeout(() => {
+			window.location.href = backHref;
+		}, 10);
 	}
 
 	async function react(emoji: string) {
@@ -170,10 +216,28 @@
 </svelte:head>
 
 <div class="min-h-screen bg-[#f7f7f2] text-slate-900">
+	<div
+		class={`pointer-events-none fixed inset-0 z-[70] flex items-center justify-center bg-black/50 px-6 transition-opacity duration-200 ${
+			isNavigating ? 'opacity-100' : 'opacity-0'
+		}`}
+		aria-hidden={!isNavigating}
+	>
+		<div
+			class="flex max-w-sm flex-col items-center gap-3 rounded-lg border-2 border-slate-900 bg-white px-6 py-5 text-center text-slate-900 shadow-[10px_10px_0_#0f172a]"
+		>
+			<div class="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-600">
+				<span class="h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-l-slate-900"></span>
+				Loading...
+			</div>
+			<p class="text-base font-semibold">Opening the next page</p>
+			<p class="text-xs text-slate-600">Hang tight while we redirect you.</p>
+		</div>
+	</div>
 	<main class="mx-auto max-w-4xl px-5 py-10">
 		<a
 			class="inline-flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white px-3 py-2 text-sm font-semibold shadow-[4px_4px_0_#0f172a] transition hover:-translate-y-[1px]"
-			href="https://contrib.club/"
+			href={backHref}
+			onclick={handleBackClick}
 		>
 			<span class="text-lg">←</span> Back to Contrib.Club
 		</a>

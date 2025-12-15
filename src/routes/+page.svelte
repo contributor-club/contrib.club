@@ -56,12 +56,28 @@
 	const orgReposCount = $derived((data?.orgRepos ?? []).length);
 	const memberRepos = $derived(data?.memberRepos ?? []);
 	const memberDetails = $derived(data?.memberDetails ?? []);
+	const blogError = $derived(data?.blogError ?? null);
 
 	// Hero stat blocks derived from live GitHub data
 	const stats = $derived([
-		{ label: 'Stars', value: formatNumber(githubStats.stars), hint: 'Team GitHub stars' },
-		{ label: 'Forks', value: formatNumber(githubStats.forks), hint: 'Team GitHub forks' },
-		{ label: 'Members', value: formatNumber(githubStats.contributors), hint: 'Team GitHub members' }
+		{
+			label: 'Stars',
+			value: formatNumber(githubStats.stars),
+			hint: 'Team GitHub stars',
+			icon: 'star'
+		},
+		{
+			label: 'Forks',
+			value: formatNumber(githubStats.forks),
+			hint: 'Team GitHub forks',
+			icon: 'fork'
+		},
+		{
+			label: 'Members',
+			value: formatNumber(githubStats.contributors),
+			hint: 'Team GitHub members',
+			icon: 'user'
+		}
 	]);
 
 	// Team member profiles from org data
@@ -297,9 +313,6 @@
 				})(),
 				created_at: repo.created_at,
 				updated_at: repo.updated_at,
-				isNew: repo.updated_at
-					? Date.now() - new Date(repo.updated_at).getTime() < 1000 * 60 * 60 * 24 * 45
-					: false,
 				ownerType: 'group' as const,
 				owner: 'contributor-club',
 				status: 'Live',
@@ -689,6 +702,7 @@
 	let tagSearchTerm = $state('');
 	let blogVisibleCount = $state(3);
 	let blogSearchTerm = $state('');
+	let isNavigating = $state(false);
 
 	function toggleTag(tag: string) {
 		selectedTags = selectedTags.includes(tag)
@@ -788,6 +802,24 @@
 		console.log(
 			`Contrib.Club data → members: ${orgMembersCount}, repos: ${orgReposCount}, projects rendered: ${allProjects.length}`
 		);
+
+		const handleNavigate = (event: MouseEvent) => {
+			const target = event.target as HTMLElement | null;
+			const anchor = target?.closest?.('a');
+			if (!anchor) return;
+			if (anchor.hasAttribute('data-no-loader')) return;
+			const href = anchor.getAttribute('href');
+			if (!href || href.startsWith('#')) return;
+			isNavigating = true;
+			if (anchor.target === '_blank') {
+				setTimeout(() => (isNavigating = false), 1500);
+			}
+		};
+
+		window.addEventListener('click', handleNavigate, { capture: true });
+		return () => {
+			window.removeEventListener('click', handleNavigate, { capture: true });
+		};
 	});
 
 	// Log repositories and topics when loaded (client-side)
@@ -819,6 +851,24 @@
 </svelte:head>
 
 <div class="min-h-screen bg-[#f7f7f2] text-slate-900">
+	<div
+		class={`pointer-events-none fixed inset-0 z-[70] flex items-center justify-center bg-black/50 px-6 transition-opacity duration-200 ${
+			isNavigating ? 'opacity-100' : 'opacity-0'
+		}`}
+		aria-hidden={!isNavigating}
+	>
+		<div
+			class="flex max-w-sm flex-col items-center gap-3 rounded-lg border-2 border-slate-900 bg-white px-6 py-5 text-center text-slate-900 shadow-[10px_10px_0_#0f172a]"
+		>
+			<div class="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-600">
+				<span class="h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-l-slate-900"></span>
+				Loading...
+			</div>
+			<p class="text-base font-semibold">Opening the next page</p>
+			<p class="text-xs text-slate-600">Hang tight while we redirect you.</p>
+		</div>
+	</div>
+
 	<a
 		class="fixed top-4 right-4 z-50 inline-flex items-center gap-2 rounded-md border-2 border-slate-900 bg-white px-4 py-2 text-sm font-semibold shadow-[6px_6px_0_#0f172a] transition hover:-translate-y-[2px] hover:shadow-[8px_8px_0_#0f172a]"
 		href="https://github.com/contributor-club/contrib.club"
@@ -960,15 +1010,142 @@
 					width: fit-content;
 					min-width: fit-content;
 				}
+
+				.stat-card {
+					position: relative;
+					overflow: hidden;
+				}
+
+				.stat-icon {
+					position: absolute;
+					top: 50%;
+					right: 0;
+					transform: translate(45%, -50%);
+					height: 75%;
+					width: auto;
+					aspect-ratio: 1 / 1;
+					max-height: 120px;
+					min-height: 64px;
+					color: #0f172a;
+					opacity: 0.1;
+					pointer-events: none;
+				}
+			</style>
+			<style>
+				:global(button),
+				:global(a[class*='shadow-[']),
+				:global(label[class*='shadow-[']),
+				:global(.pressable) {
+					transition: transform 140ms ease, box-shadow 140ms ease !important;
+					transform: translate3d(var(--tw-translate-x, 0), var(--tw-translate-y, 0), 0)
+							scale(var(--tw-scale-x, 1), var(--tw-scale-y, 1))
+						!important;
+					touch-action: manipulation;
+					will-change: transform;
+				}
+
+				@media (hover: hover) {
+					:global(button:hover),
+					:global(a[class*='shadow-[']:hover),
+					:global(label[class*='shadow-[']:hover),
+					:global(.pressable:hover) {
+						--tw-translate-x: 2px !important;
+						--tw-translate-y: 2px !important;
+						--tw-scale-x: 1;
+						--tw-scale-y: 1;
+						box-shadow: 3px 3px 0 #0f172a !important;
+					}
+				}
+
+				:global(button:active),
+				:global(a[class*='shadow-[']:active),
+				:global(label[class*='shadow-[']:active),
+				:global(.pressable:active) {
+					--tw-translate-x: 4px !important;
+					--tw-translate-y: 4px !important;
+					--tw-scale-x: 0.98 !important;
+					--tw-scale-y: 0.98 !important;
+					box-shadow: 0 0 0 #0f172a !important;
+				}
+
+				:global(button:focus-visible),
+				:global(a[class*='shadow-[']:focus-visible),
+				:global(label[class*='shadow-[']:focus-visible),
+				:global(.pressable:focus-visible) {
+					outline: 2px solid #0f172a;
+					outline-offset: 2px;
+				}
 			</style>
 
 			<div class="mt-10 grid w-full max-w-3xl gap-4 sm:grid-cols-3">
 				{#if statsReady}
 					{#each stats as stat}
 						<div
-							class="rounded-lg border-2 border-slate-900 bg-white p-5 text-left shadow-[6px_6px_0_#0f172a]"
+							class="stat-card rounded-lg border-2 border-slate-900 bg-white p-5 text-left shadow-[6px_6px_0_#0f172a]"
 							data-test={`stat-${stat.label.toLowerCase()}`}
 						>
+							{#if stat.icon === 'star'}
+								<svg
+									class="stat-icon"
+									viewBox="0 0 24 24"
+									aria-hidden="true"
+								>
+									<path
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2.2"
+										stroke-linejoin="round"
+										d="m12 3.4 2.4 5.05 5.59.46-4.25 3.6 1.34 5.5L12 14.8 6.92 18 8.26 12.5 4 8.9l5.59-.45L12 3.4Z"
+									/>
+								</svg>
+							{:else if stat.icon === 'fork'}
+								<svg
+									class="stat-icon"
+									viewBox="0 0 24 24"
+									aria-hidden="true"
+								>
+									<circle cx="7" cy="6" r="2.3" fill="none" stroke="currentColor" stroke-width="2.2" />
+									<circle cx="17" cy="6" r="2.3" fill="none" stroke="currentColor" stroke-width="2.2" />
+									<circle cx="12" cy="18.5" r="2.3" fill="none" stroke="currentColor" stroke-width="2.2" />
+									<path
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2.2"
+										stroke-linecap="round"
+										d="M7 8.5V11c0 3 3 4.5 5 4.5s5-1.5 5-4.5V8.5"
+									/>
+									<path
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2.2"
+										stroke-linecap="round"
+										d="M12 13.5v2.5"
+									/>
+								</svg>
+							{:else if stat.icon === 'user'}
+								<svg
+									class="stat-icon"
+									viewBox="0 0 24 24"
+									aria-hidden="true"
+								>
+									<path
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2.2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										d="M12 4.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z"
+									/>
+									<path
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2.2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										d="M6 18.5c0-2.5 3-4 6-4s6 1.5 6 4"
+									/>
+								</svg>
+							{/if}
 							<p class="text-xs font-semibold tracking-wide text-slate-600 uppercase">
 								{stat.label}
 							</p>
@@ -996,8 +1173,8 @@
 		<section id="blog" class="space-y-5 border-t-2 border-slate-900 py-10">
 			<div class="flex items-center justify-between">
 				<div>
-					<p class="text-xs font-semibold tracking-wide text-slate-500 uppercase">Our Blog</p>
-					<h2 class="text-3xl font-semibold">Notes from the team</h2>
+					<p class="text-xs font-semibold tracking-wide text-slate-500 uppercase">$ Notes from the team</p>
+					<h2 class="text-3xl font-semibold">Blog</h2>
 					<p class="text-slate-700">
 						Releases, projects, and practices brought to you by the Contrib.Club team.
 					</p>
@@ -1005,17 +1182,15 @@
 			</div>
 			<div class="grid gap-6 lg:grid-cols-3">
 				{#if renderedBlogPosts.length === 0}
-					{#each Array(3) as _}
-						<div class="flex flex-col gap-3 rounded-lg border-2 border-slate-900 bg-slate-100 p-5 shadow-[6px_6px_0_#0f172a] animate-pulse">
-							<div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600">
-								<span class="h-3 w-20 rounded bg-slate-200"></span>
-								<span class="h-3 w-16 rounded bg-slate-200"></span>
-							</div>
-							<div class="h-5 w-2/3 rounded bg-slate-200"></div>
-							<div class="h-12 w-full rounded bg-slate-200"></div>
-							<div class="h-4 w-20 rounded bg-slate-200"></div>
-						</div>
-					{/each}
+					<div class="rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]">
+						<p class="text-sm font-semibold text-slate-700">
+							{#if blogError}
+								{blogError}
+							{:else}
+								No blog posts are available right now.
+							{/if}
+						</p>
+					</div>
 				{:else if filteredBlogPosts.length === 0}
 					<div class="rounded-lg border-2 border-slate-900 bg-white p-5 shadow-[6px_6px_0_#0f172a]">
 						No blogs match your search yet.
@@ -1094,8 +1269,8 @@
 		<section id="projects" class="space-y-5 py-10">
 			<div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
 				<div>
-					<p class="text-xs font-semibold tracking-wide text-slate-500 uppercase">The Projects</p>
-					<h2 class="text-3xl font-semibold">Our Projects & Services</h2>
+					<p class="text-xs font-semibold tracking-wide text-slate-500 uppercase">$ Featured Products</p>
+					<h2 class="text-3xl font-semibold">Projects & Services</h2>
 					<p class="text-slate-700">
 						<b>We're not slow.</b> We build and ship open-source projects that solve
 						<i>real problems</i>
@@ -1337,7 +1512,7 @@
 								</div>
 								{#if project.github}
 									<a
-										class="flex h-full items-center justify-between rounded-md border-2 border-slate-900 bg-white px-3 py-2 text-xs font-semibold shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+										class="pressable flex h-full items-center justify-between rounded-md border-2 border-slate-900 bg-white px-3 py-2 text-xs font-semibold shadow-[3px_3px_0_#0f172a]"
 										href={project.github}
 										target="_blank"
 										rel="noreferrer"
@@ -1363,7 +1538,7 @@
 								{/if}
 								{#if project.externalUrl}
 									<a
-										class="flex h-full items-center justify-center gap-2 rounded-md border-2 border-slate-900 bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+										class="pressable flex h-full items-center justify-center gap-2 rounded-md border-2 border-slate-900 bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-[3px_3px_0_#0f172a]"
 										href={project.externalUrl}
 										target="_blank"
 										rel="noreferrer"
@@ -1557,9 +1732,15 @@
 		>
 			<div class="flex items-center gap-3">
 				<div
-					class="flex h-10 w-10 items-center justify-center rounded-md border-2 border-slate-900 bg-white text-sm font-semibold shadow-[3px_3px_0_#0f172a]"
+					class="h-10 w-10 overflow-hidden"
 				>
-					CC
+					<img
+						alt="Contributors Club logo"
+						class="h-full w-full object-cover"
+						src="https://github.com/contributor-club.png?size=120"
+						loading="lazy"
+						decoding="async"
+					/>
 				</div>
 				<div>
 					<p class="text-lg font-semibold">Contributors Club</p>
@@ -1568,7 +1749,7 @@
 			</div>
 			<div class="flex flex-wrap items-center gap-3 text-sm font-semibold text-slate-800">
 				<a
-					class="flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+					class="pressable flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a]"
 					href="https://github.com/contributor-club/"
 					target="_blank"
 					rel="noreferrer"
@@ -1582,7 +1763,7 @@
 					</svg>
 				</a>
 				<a
-					class="flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+					class="pressable flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a]"
 					href="https://x.com"
 					target="_blank"
 					rel="noreferrer"
@@ -1595,7 +1776,7 @@
 					</svg>
 				</a>
 				<a
-					class="flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+					class="pressable flex items-center justify-center rounded-md border-2 border-slate-900 bg-white p-2 shadow-[3px_3px_0_#0f172a]"
 					href="https://instagram.com"
 					target="_blank"
 					rel="noreferrer"

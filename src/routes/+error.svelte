@@ -1,3 +1,14 @@
+<!--
+                                                                     
+                                                                     
+	▄█████  ▄▄▄  ▄▄  ▄▄ ▄▄▄▄▄▄ ▄▄▄▄  ▄▄ ▄▄▄▄    ▄█████ ▄▄    ▄▄ ▄▄ ▄▄▄▄  
+	██     ██▀██ ███▄██   ██   ██▄█▄ ██ ██▄██   ██     ██    ██ ██ ██▄██ 
+	▀█████ ▀███▀ ██ ▀██   ██   ██ ██ ██ ██▄█▀ ▄ ▀█████ ██▄▄▄ ▀███▀ ██▄█▀ 
+                                                                     
+	 Contrib.Club — designed and developed by the Contributor Club team
+
+	 
+-->
 <script lang="ts">
 	let { error, status } = $props();
 </script>

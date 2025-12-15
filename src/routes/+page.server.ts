@@ -371,10 +371,12 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	let orgRepos: OrgRepo[] = [];
 	let memberRepos: OrgRepo[] = [];
 	let blogPosts: BlogEntry[] = [];
+	let blogError: string | null = null;
 	let fallbackRepoCache: string[] = [];
 	let fallbackRepoUrls: string[] = [];
 	let rateLimited = false;
 	const d1 = cfEnv?.CACHE_DB;
+	const canUseD1 = Boolean(d1 && typeof d1.prepare === 'function');
 	let persistedPayload: CachedPayload | null = null;
 	let persistedTimestamp = 0;
 	let persistedRateUntil = 0;
@@ -400,7 +402,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	const now = Date.now();
 
 	// Try loading persisted cache from D1 (shared across instances)
-	if (d1) {
+	if (canUseD1) {
 		try {
 			await d1
 				.prepare(
@@ -772,8 +774,9 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 
 	// Prepare per-repo activity cache (persisted daily to avoid API spam)
 	const activityCache = new Map<string, { activity: number[]; timestamp: number }>();
+	const activityMaxAge = 1000 * 60 * 60 * 24 * 2; // force refresh if older than 2 days (guard against clock skew)
 	let activityTableReady = false;
-	if (d1) {
+	if (canUseD1) {
 		try {
 			await d1
 				.prepare(
@@ -813,14 +816,16 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		const hasData = (cached?.activity?.length ?? 0) > 0;
 		const ttl = hasData ? ACTIVITY_TTL : ACTIVITY_RETRY_TTL;
 		const age = cached ? activityFetchTime - cached.timestamp : null;
+		const tooOld = age !== null && age > activityMaxAge;
 		console.log('Activity cache check', {
 			repoUrl,
 			hasCached: Boolean(cached),
 			hasData,
 			ageMs: age,
-			ttlMs: ttl
+			ttlMs: ttl,
+			tooOld
 		});
-		if (cached && activityFetchTime - cached.timestamp < ttl) {
+		if (cached && activityFetchTime - cached.timestamp < ttl && !tooOld) {
 			const cachedActivity = cached?.activity ?? [];
 			repoStats[repoUrl] = {
 				...repoStats[repoUrl],
@@ -850,7 +855,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 						...repoStats[repoUrl],
 						activity: fallbackActivity
 					};
-					await persistActivity(d1, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
+					await persistActivity(canUseD1 ? d1 : null, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
 					continue;
 				}
 
@@ -865,14 +870,14 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 						days: daily.length,
 						total: daily.reduce((sum, v) => sum + v, 0)
 					});
-					await persistActivity(d1, activityTableReady, activityCache, repoUrl, daily, activityFetchTime);
+					await persistActivity(canUseD1 ? d1 : null, activityTableReady, activityCache, repoUrl, daily, activityFetchTime);
 					continue;
 				} catch (error) {
 					console.error('Fallback commit history failed for', repoUrl, error);
 					const emptyActivity: number[] = [];
 					repoStats[repoUrl] = { ...repoStats[repoUrl], activity: emptyActivity };
 					await persistActivity(
-						d1,
+						canUseD1 ? d1 : null,
 						activityTableReady,
 						activityCache,
 						repoUrl,
@@ -893,7 +898,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 						...repoStats[repoUrl],
 						activity: fallbackActivity
 					};
-					await persistActivity(d1, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
+					await persistActivity(canUseD1 ? d1 : null, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
 					continue;
 				}
 
@@ -908,13 +913,13 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 						days: daily.length,
 						total: daily.reduce((sum, v) => sum + v, 0)
 					});
-					await persistActivity(d1, activityTableReady, activityCache, repoUrl, daily, activityFetchTime);
+					await persistActivity(canUseD1 ? d1 : null, activityTableReady, activityCache, repoUrl, daily, activityFetchTime);
 				} catch (error) {
 					console.error('Fallback commit history failed for', repoUrl, error);
 					const emptyActivity: number[] = [];
 					repoStats[repoUrl] = { ...repoStats[repoUrl], activity: emptyActivity };
 					await persistActivity(
-						d1,
+						canUseD1 ? d1 : null,
 						activityTableReady,
 						activityCache,
 						repoUrl,
@@ -941,7 +946,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 				total: activity.reduce((sum, v) => sum + v, 0)
 			});
 
-			await persistActivity(d1, activityTableReady, activityCache, repoUrl, activity, activityFetchTime);
+			await persistActivity(canUseD1 ? d1 : null, activityTableReady, activityCache, repoUrl, activity, activityFetchTime);
 		} catch (error) {
 			console.error('Failed to load commit activity for', repoUrl, error);
 			const cached = activityCache.get(repoUrl);
@@ -950,7 +955,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 				...repoStats[repoUrl],
 				activity: fallbackActivity
 			};
-			await persistActivity(d1, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
+			await persistActivity(canUseD1 ? d1 : null, activityTableReady, activityCache, repoUrl, fallbackActivity, activityFetchTime);
 		}
 	}
 
@@ -962,6 +967,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		const contentsRes = await fetch(`https://api.github.com/repos/${wikiOwner}/${wikiRepo}/contents`, {
 			headers: githubToken ? headers : publicHeaders
 		});
+		console.log('Wiki contents response', contentsRes.status, contentsRes.statusText);
 
 		if (contentsRes.ok) {
 			const files: { name: string; path: string; download_url?: string; type: string; url: string }[] =
@@ -978,8 +984,11 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 						let content = '';
 						try {
 							const contentRes = await fetch(rawUrl, { headers: githubToken ? headers : publicHeaders });
+							console.log('Wiki file response', file.path, contentRes.status, contentRes.statusText);
 							if (contentRes.ok) {
 								content = await contentRes.text();
+							} else {
+								console.warn('Wiki file fetch not ok', { path: file.path, status: contentRes.status });
 							}
 						} catch (error) {
 							console.error('Failed to fetch wiki content for', file.path, error);
@@ -998,6 +1007,8 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 									commits[0]?.commit?.committer?.date ??
 									commits[0]?.commit?.author?.date ??
 									undefined;
+							} else {
+								console.warn('Wiki commit fetch not ok', { path: file.path, status: commitRes.status });
 							}
 						} catch (error) {
 							console.error('Failed to load wiki commit date for', file.path, error);
@@ -1034,15 +1045,28 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 				.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 		} else if (contentsRes.status === 403 || contentsRes.status === 429) {
 			rateLimited = true;
+			console.warn('Wiki contents rate limited', contentsRes.status);
+			blogError = 'Rate limited while loading blogs.';
+		} else if (contentsRes.status === 404) {
+			blogError = 'Blog wiki repository not found (404).';
+			console.warn('Wiki contents fetch failed', contentsRes.status, contentsRes.statusText);
+		} else {
+			console.error('Wiki contents fetch failed', contentsRes.status, contentsRes.statusText);
+			blogError = `Failed to load blog posts (${contentsRes.status}).`;
 		}
 	} catch (error) {
 		console.error('Failed to load wiki posts', error);
+		blogError = 'Failed to load blog posts (network error).';
 	}
 
 const blogMap = new Map<string, BlogEntry>();
 
+	if (!canUseD1) {
+		console.warn('D1 not available for blogs; falling back to wiki only.');
+	}
+
 	// Load from D1 if available
-	if (d1) {
+	if (canUseD1) {
 		try {
 			await d1
 				.prepare(
@@ -1059,6 +1083,7 @@ const blogMap = new Map<string, BlogEntry>();
 					'SELECT slug, title, description, content, author, author_url, created_at, modified_at, reactions FROM blogs'
 				)
 				.all();
+			console.log('Blogs loaded from D1', rows?.results?.length ?? 0);
 			for (const row of (rows?.results as DbBlogRow[] | undefined) ?? []) {
 				const entry = mapDbBlog(row);
 				if (entry) blogMap.set(entry.slug, entry);
@@ -1079,7 +1104,7 @@ const blogMap = new Map<string, BlogEntry>();
 			blogMap.set(slug, finalEntry);
 		}
 
-		if (d1) {
+		if (canUseD1) {
 			try {
 				await d1
 					.prepare(
@@ -1106,6 +1131,9 @@ const blogMap = new Map<string, BlogEntry>();
 	blogPosts = Array.from(blogMap.values()).sort(
 		(a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
 	);
+	if (blogMap.size > 0) {
+		blogError = null;
+	}
 	// Populate author websites from GitHub profiles (fallback to stored authorUrl if fetch fails)
 	if (blogPosts.length > 0) {
 		const uniqueAuthors = Array.from(new Set(blogPosts.map((post) => post.author).filter(Boolean)));
@@ -1130,7 +1158,8 @@ const blogMap = new Map<string, BlogEntry>();
 		memberRepos,
 		orgMembers: orgMembersList,
 		memberDetails,
-		blogPosts
+		blogPosts,
+		blogError
 	};
 
 	// Serve cached data if rate limited and cache is still fresh
@@ -1152,7 +1181,7 @@ const blogMap = new Map<string, BlogEntry>();
 	memoryCache.payload = payload;
 	memoryCache.timestamp = now;
 
-	if (d1) {
+	if (canUseD1) {
 		try {
 			await d1
 				.prepare(
@@ -1172,3 +1201,4 @@ const blogMap = new Map<string, BlogEntry>();
 
 	return payload;
 };
+import { dev } from '$app/environment';
