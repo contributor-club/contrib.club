@@ -118,6 +118,7 @@
 	let applyName = $state('');
 	let applyEmail = $state('');
 	let applyGithubUser = $state('');
+	let applyPrivacyAgreed = $state(false);
 	let githubStatus = $state<{
 		state: 'idle' | 'loading' | 'valid' | 'invalid';
 		avatar?: string;
@@ -210,6 +211,11 @@
 
 		if (!applyName.trim() || !applyEmail.trim() || githubStatus.state !== 'valid') {
 			formError = 'Name, email, and a valid GitHub profile are required.';
+			return;
+		}
+
+		if (!applyPrivacyAgreed) {
+			formError = 'You must agree to the privacy policy before submitting.';
 			return;
 		}
 
@@ -1684,6 +1690,22 @@
 						</div>
 					</div>
 					<div class="md:col-span-2">
+						<label class="flex items-center gap-3 rounded-lg border-2 border-slate-900 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-900 shadow-[3px_3px_0_#0f172a]">
+							<input
+								type="checkbox"
+								class="h-4 w-4 accent-slate-900"
+								checked={applyPrivacyAgreed}
+								onchange={(event) => (applyPrivacyAgreed = event.currentTarget.checked)}
+							/>
+							<span>
+								I agree to the
+								<a class="underline decoration-2 underline-offset-4" href="/privacy" target="_blank" rel="noreferrer"
+									>privacy policy</a
+								>.
+							</span>
+						</label>
+					</div>
+					<div class="md:col-span-2">
 						{#if formError}
 							<p
 								class="rounded-md border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 shadow-[3px_3px_0_#0f172a]"
@@ -1787,6 +1809,12 @@
 							d="M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5Zm0 2a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H7Zm5 3.5A4.5 4.5 0 1 1 7.5 12 4.5 4.5 0 0 1 12 7.5Zm0 2A2.5 2.5 0 1 0 14.5 12 2.5 2.5 0 0 0 12 9.5Zm4.75-4.25a1 1 0 1 1-1 1 1 1 0 0 1 1-1Z"
 						/>
 					</svg>
+				</a>
+				<a
+					class="pressable flex items-center justify-center rounded-md border-2 border-slate-900 bg-white px-3 py-2 shadow-[3px_3px_0_#0f172a] transition hover:-translate-y-[1px]"
+					href="/privacy"
+				>
+					Privacy
 				</a>
 			</div>
 		</div>

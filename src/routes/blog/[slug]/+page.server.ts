@@ -30,6 +30,7 @@ type DbBlogRow = {
 	reactions?: string | null;
 };
 
+// Normalize arbitrary websites (used for author links)
 function normalizeWebsite(value: string | null | undefined) {
 	if (!value || typeof value !== 'string') return null;
 	const trimmed = value.trim();
@@ -45,6 +46,7 @@ function normalizeWebsite(value: string | null | undefined) {
 	}
 }
 
+// Ensure reaction objects are numeric, non-empty, and normalized
 function normalizeReactionCounts(obj: any): Record<string, number> {
 	const counts: Record<string, number> = {};
 	if (!obj || typeof obj !== 'object') return counts;
@@ -57,6 +59,7 @@ function normalizeReactionCounts(obj: any): Record<string, number> {
 	return counts;
 }
 
+// Parse stored reactions JSON into a usable counts map
 function parseReactions(raw: string | null | undefined): Record<string, number> {
 	if (!raw) return {};
 	try {
@@ -78,6 +81,7 @@ function parseReactions(raw: string | null | undefined): Record<string, number> 
 	return {};
 }
 
+// Map a DB row into a BlogEntry; returns null when required fields are missing
 function mapDbBlog(row: DbBlogRow): BlogEntry | null {
 	if (!row?.slug || !row.title) return null;
 	const reactions = parseReactions(row.reactions);
@@ -95,6 +99,7 @@ function mapDbBlog(row: DbBlogRow): BlogEntry | null {
 	};
 }
 
+// Fetch author website from GitHub profile (used to enrich blog data)
 async function fetchAuthorWebsite(author: string, headers: Record<string, string>) {
 	try {
 		const res = await fetch(`https://api.github.com/users/${author}`, { headers });
@@ -106,6 +111,7 @@ async function fetchAuthorWebsite(author: string, headers: Record<string, string
 	}
 }
 
+// Fetch a wiki markdown file as a fallback blog entry when DB misses the slug
 async function fetchWikiFallback(slug: string, headers: Record<string, string>): Promise<BlogEntry | null> {
 	const wikiOwner = 'contributor-club';
 	const wikiRepo = 'contrib.club.wiki';
@@ -158,6 +164,7 @@ async function fetchWikiFallback(slug: string, headers: Record<string, string>):
 	};
 }
 
+// Load a single blog post by slug; prefer D1, fall back to wiki when needed
 export const load: PageServerLoad = async ({ params, platform }) => {
 	const slug = params.slug;
 	const cfEnv = (platform?.env as Env | undefined) ?? undefined;

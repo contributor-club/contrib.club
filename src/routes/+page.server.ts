@@ -37,6 +37,7 @@ type BlogEntry = {
 	reactions: Record<string, number>;
 };
 
+// Fetch per-day commit counts for a repo over a window (fallback when stats API lags)
 async function fetchDailyCommitsForWindow(
 	parsed: { owner: string; repo: string },
 	headers: Record<string, string>,
@@ -71,10 +72,12 @@ async function fetchDailyCommitsForWindow(
 	return buckets;
 }
 
+// Simple delay helper for retry backoff
 function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Call GitHub stats API with retries/backoff to avoid transient 202 responses
 async function fetchCommitActivityWithRetry(
 	parsed: { owner: string; repo: string },
 	headers: Record<string, string>,
@@ -100,6 +103,7 @@ async function fetchCommitActivityWithRetry(
 	return { ok: false, status: lastStatus ?? 0, text: 'still 202 after retries' };
 }
 
+// Parse a GitHub repo URL into { owner, repo }
 function parseRepo(url: string | undefined) {
 	if (!url) return null;
 	try {
@@ -112,6 +116,7 @@ function parseRepo(url: string | undefined) {
 	}
 }
 
+// Normalize a repo string/URL to https://github.com/{owner}/{repo}
 function normalizeRepoUrl(value: string | undefined) {
 	if (!value) return null;
 	const trimmed = value.trim().replace(/^\/+|\/+$/g, '');
@@ -133,6 +138,7 @@ function normalizeRepoUrl(value: string | undefined) {
 	return `https://github.com/${trimmed}`;
 }
 
+// Normalize homepages we show on cards (strip bad protocols/hashes)
 function normalizeHomepage(value: string | null | undefined) {
 	if (!value || typeof value !== 'string') return null;
 	const trimmed = value.trim();
@@ -148,6 +154,7 @@ function normalizeHomepage(value: string | null | undefined) {
 	}
 }
 
+// Normalize arbitrary websites (used for author links)
 function normalizeWebsite(value: string | null | undefined) {
 	if (!value || typeof value !== 'string') return null;
 	const trimmed = value.trim();
@@ -163,6 +170,7 @@ function normalizeWebsite(value: string | null | undefined) {
 	}
 }
 
+// Convert a title to a URL-safe slug (with a fallback when needed)
 function slugifyTitle(title: string, fallback: string) {
 	const base = title
 		.toLowerCase()
@@ -175,6 +183,7 @@ function slugifyTitle(title: string, fallback: string) {
 	return slug || 'post';
 }
 
+// Short pseudo-random ID for fallback slugs
 function shortId() {
 	return Math.random().toString(36).slice(2, 8);
 }
@@ -191,6 +200,7 @@ type DbBlogRow = {
 	reactions?: string | null;
 };
 
+// Ensure reaction objects are numeric, non-empty, and normalized
 function normalizeReactionCounts(obj: any): Record<string, number> {
 	const counts: Record<string, number> = {};
 	if (!obj || typeof obj !== 'object') return counts;
@@ -203,6 +213,7 @@ function normalizeReactionCounts(obj: any): Record<string, number> {
 	return counts;
 }
 
+// Parse stored reactions JSON into a usable counts map
 function parseReactions(raw: string | null | undefined): Record<string, number> {
 	if (!raw) return {};
 	try {
@@ -226,6 +237,7 @@ function parseReactions(raw: string | null | undefined): Record<string, number> 
 	return {};
 }
 
+// Map a DB row into a BlogEntry; returns null when required fields are missing
 function mapDbBlog(row: DbBlogRow): BlogEntry | null {
 	if (!row?.slug || !row.title) return null;
 	let reactions: string[] = [];
@@ -376,7 +388,11 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 	let fallbackRepoUrls: string[] = [];
 	let rateLimited = false;
 	const d1 = cfEnv?.CACHE_DB;
-	const canUseD1 = Boolean(d1 && typeof d1.prepare === 'function');
+	const allowD1InDev = import.meta.env?.VITE_USE_D1 === 'true' || process.env.USE_D1 === 'true';
+	const canUseD1 = Boolean(d1 && typeof d1.prepare === 'function' && (!dev || allowD1InDev));
+	if (dev && !allowD1InDev && d1) {
+		console.warn('D1 detected but disabled in dev mode. Set VITE_USE_D1=true to enable locally.');
+	}
 	let persistedPayload: CachedPayload | null = null;
 	let persistedTimestamp = 0;
 	let persistedRateUntil = 0;
@@ -1046,17 +1062,11 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 		} else if (contentsRes.status === 403 || contentsRes.status === 429) {
 			rateLimited = true;
 			console.warn('Wiki contents rate limited', contentsRes.status);
-			blogError = 'Rate limited while loading blogs.';
-		} else if (contentsRes.status === 404) {
-			blogError = 'Blog wiki repository not found (404).';
-			console.warn('Wiki contents fetch failed', contentsRes.status, contentsRes.statusText);
 		} else {
 			console.error('Wiki contents fetch failed', contentsRes.status, contentsRes.statusText);
-			blogError = `Failed to load blog posts (${contentsRes.status}).`;
 		}
 	} catch (error) {
 		console.error('Failed to load wiki posts', error);
-		blogError = 'Failed to load blog posts (network error).';
 	}
 
 const blogMap = new Map<string, BlogEntry>();
@@ -1159,7 +1169,7 @@ const blogMap = new Map<string, BlogEntry>();
 		orgMembers: orgMembersList,
 		memberDetails,
 		blogPosts,
-		blogError
+		blogError: blogPosts.length > 0 ? null : 'Failed to load blogs.'
 	};
 
 	// Serve cached data if rate limited and cache is still fresh
