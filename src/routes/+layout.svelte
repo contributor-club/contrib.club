@@ -17,6 +17,6 @@
 </script>
 
 <svelte:head>
-	<script src="https://databucket.online/v1/analytics/2.js"></script>
+	<script src="https://databucket.online/v1/analytics/1.js"></script>
 	<link rel="icon" href={favicon} /></svelte:head>
 {@render children()}
