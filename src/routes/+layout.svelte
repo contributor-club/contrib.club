@@ -16,5 +16,7 @@
 	let { children } = $props();
 </script>
 
-<svelte:head><link rel="icon" href={favicon} /></svelte:head>
+<svelte:head>
+	<script src="https://databucket.online/v1/analytics/2.js"></script>
+	<link rel="icon" href={favicon} /></svelte:head>
 {@render children()}
