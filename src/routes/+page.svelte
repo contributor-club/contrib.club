@@ -284,7 +284,7 @@
 	}
 
 	function summaryWithEllipsis(text: string | null | undefined) {
-		if (!text) return 'No description...';
+		if (!text) return 'We have no description for this...';
 		const trimmed = text.trim();
 		if (trimmed.endsWith('...')) return trimmed;
 		if (trimmed.endsWith('..')) return `${trimmed}.`;
