@@ -54,7 +54,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 	try {
 		const normalizedGithub = normalizeGithub(github);
 		if (!normalizedGithub) {
-			return new Response(JSON.stringify({ error: 'A valid GitHub username or URL is required.' }), {
+			return new Response(JSON.stringify({ error: 'The GitHub username is invalid.' }), {
 				status: 400,
 				headers: { 'content-type': 'application/json' }
 			});
