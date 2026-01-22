@@ -909,7 +909,7 @@ export const load: PageServerLoad = async ({ fetch, platform }) => {
 				if (activityResult.status === 403 || activityResult.status === 429) rateLimited = true;
 				const cached = activityCache.get(repoUrl);
 				const fallbackActivity = cached?.activity ?? [];
-				if (fallbackActivity.length > 0) {
+				if (fallbackActivity.length >= 0) {
 					repoStats[repoUrl] = {
 						...repoStats[repoUrl],
 						activity: fallbackActivity
